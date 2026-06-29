@@ -1,13 +1,13 @@
 {
   "functions": {
     "app/api/analyse/route.ts": {
-      "maxDuration": 30
+      "maxDuration": 60
     },
     "app/api/profile/route.ts": {
-      "maxDuration": 30
+      "maxDuration": 60
     },
     "app/api/interpret/route.ts": {
-      "maxDuration": 30
+      "maxDuration": 60
     }
   }
 }

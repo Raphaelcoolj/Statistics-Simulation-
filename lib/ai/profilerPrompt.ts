@@ -32,7 +32,12 @@ Chart rules:
 
 Identify the dependent variable by looking for column names
 containing: price, salary, outcome, result, survived, target,
-label, score, revenue, growth, mortality, diagnosis`
+label, score, revenue, growth, mortality, diagnosis
+
+For relationshipSuggestions, suggest 2-5 different dependent→predictor
+relationships you can identify from the column names and types.
+Each relationship should have a different dependent variable when possible.
+Provide a short reason explaining why this relationship is meaningful.`
 }
 
 export function buildProfilerUserPrompt(schema: DatasetSchema): string {
@@ -73,6 +78,14 @@ Return ONLY this JSON:
       "column": "column or null",
       "series": []
     }
+  ],
+  "relationshipSuggestions": [
+    {
+      "dependent": "column_name",
+      "predictors": ["col1", "col2"],
+      "modelType": "linear|logistic|polynomial|multiple|timeseries|randomforest",
+      "reason": "why this relationship is meaningful"
+    }
   ]
 }`
 }
@@ -87,7 +100,11 @@ export function parseProfilerResponse(
     if (!parsed.analysisMap || !parsed.chartSuggestions) {
       throw new Error('Missing required fields')
     }
-    return parsed as ProfilerOutput
+    return {
+      analysisMap: parsed.analysisMap,
+      chartSuggestions: parsed.chartSuggestions,
+      relationshipSuggestions: parsed.relationshipSuggestions ?? [],
+    }
   } catch {
     console.error('[StatLab Profiler] Parse failed:', raw)
     return {
@@ -100,6 +117,7 @@ export function parseProfilerResponse(
         descriptiveColumns: schema.columns.map(c => c.name),
       },
       chartSuggestions: [],
+      relationshipSuggestions: [],
     }
   }
 }

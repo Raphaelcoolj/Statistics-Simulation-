@@ -103,30 +103,40 @@ function detectColumnType(values: unknown[]): Column['type'] {
 }
 
 function buildColumn(name: string, values: unknown[]): Column {
-  const nonNull = values.filter(v => !isMissing(v))
-  const type = detectColumnType(values)
-  const nullCount = values.filter(v => isMissing(v)).length
-  const sampleValues = nonNull.slice(0, 5)
+   const nonNull = values.filter(v => !isMissing(v))
+   const type = detectColumnType(values)
+   const nullCount = values.filter(v => isMissing(v)).length
+   const sampleValues = nonNull.slice(0, 5)
 
-  let uniqueValues: (string | number)[] | undefined
-  let min: number | undefined
-  let max: number | undefined
+   let uniqueValues: (string | number)[] | undefined
+   let min: number | undefined
+   let max: number | undefined
+   let mean: number | undefined
+   let median: number | undefined
 
-  if (type === 'categorical' || type === 'ordinal' || type === 'binary') {
-    const unique = Array.from(new Set(nonNull.map(v => String(v).trim())))
-    uniqueValues = unique.slice(0, 20) as (string | number)[] | undefined
-  }
+   if (type === 'categorical' || type === 'ordinal' || type === 'binary') {
+     const unique = Array.from(new Set(nonNull.map(v => String(v).trim())))
+     uniqueValues = unique.slice(0, 20) as (string | number)[] | undefined
+   }
 
-  if (type === 'continuous' || type === 'ordinal') {
-    const nums = nonNull.map(parseNumber).filter(v => v !== null) as number[]
-    if (nums.length > 0) {
-      min = Math.min(...nums)
-      max = Math.max(...nums)
-    }
-  }
+   if (type === 'continuous' || type === 'ordinal') {
+     const nums = nonNull.map(parseNumber).filter(v => v !== null) as number[]
+     if (nums.length > 0) {
+       min = Math.min(...nums)
+       max = Math.max(...nums)
+       
+       // Calculate mean
+       mean = nums.reduce((sum, val) => sum + val, 0) / nums.length
+       
+       // Calculate median
+       const sorted = [...nums].sort((a, b) => a - b)
+       const mid = Math.floor(sorted.length / 2)
+       median = sorted.length % 2 !== 0 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2
+     }
+   }
 
-  return { name, type, uniqueValues: uniqueValues as string[] | number[] | undefined, min, max, sampleValues, nullCount }
-}
+   return { name, type, uniqueValues: uniqueValues as string[] | number[] | undefined, min, max, mean, median, sampleValues, nullCount }
+ }
 
 function detectMissingValues(data: Row[], columns: Column[]): MissingValueReport {
   const byColumn: MissingValueReport['byColumn'] = {}

@@ -8,18 +8,21 @@ import {
 } from 'recharts'
 import { usePDFExport } from '@/lib/pdf'
 import { useStatLab } from '@/components/StatLabProvider'
+import { ErrorBoundary } from '@/components/ErrorBoundary'
 import type { AnalysisSession } from '@/lib/useStatLab'
-import type { ChartSuggestion, DescriptiveResult, CorrelationResult, HypothesisResult, RegressionResult, ModelType } from '@/lib/types'
+import type { ChartSuggestion, DescriptiveResult, CorrelationResult, HypothesisResult, RegressionResult, ModelType, RelationshipSuggestion, PredictiveResult, DatasetSchema } from '@/lib/types'
 
 const ACCENT = ['#34d399', '#818cf8', '#f472b6', '#fb923c', '#38bdf8', '#a78bfa']
 const BIN_COUNT = 10
 
 export default function AnalysePage() {
   const router = useRouter()
-  const { currentSession, history, loadSession } = useStatLab()
+  const { currentSession, history, loadSession, runPredictiveModel, file } = useStatLab()
   const { exportPDF, isGenerating } = usePDFExport()
   const [activeSession, setActiveSession] = useState<AnalysisSession | null>(currentSession)
   const [tab, setTab] = useState<'analysis' | 'predictions'>('analysis')
+  const [activeRelIndex, setActiveRelIndex] = useState(0)
+  const [extraModels, setExtraModels] = useState<Record<number, PredictiveResult | null>>({})
 
   useEffect(() => {
     if (!currentSession && history.length === 0) {
@@ -31,12 +34,11 @@ export default function AnalysePage() {
     }
   }, [currentSession, history, activeSession, router])
 
-  const predictionScatterData = useMemo(() => {
-    const session = currentSession ?? activeSession
-    const predReg = session?.result?.predictive?.regressionResult
-    if (!predReg?.predictions) return []
-    const preds = predReg.predictions
-    const residuals = predReg.residuals ?? []
+  // Pre-compute predReg reference for predictionScatterData (needs activeSession, so it's after early return)
+  const derivePredictionScatter = (reg: RegressionResult | undefined): { actual: number; predicted: number }[] => {
+    if (!reg?.predictions) return []
+    const preds = reg.predictions
+    const residuals = reg.residuals ?? []
     const step = Math.max(1, Math.floor(preds.length / 500))
     const data: { actual: number; predicted: number }[] = []
     for (let i = 0; i < preds.length; i += step) {
@@ -46,7 +48,7 @@ export default function AnalysePage() {
       })
     }
     return data
-  }, [currentSession, activeSession])
+  }
 
   if (!activeSession) {
     return (
@@ -56,14 +58,22 @@ export default function AnalysePage() {
     )
   }
 
-  const { result, chartSuggestions, interpret, schema, fileName, timestamp } = activeSession
+  const { result, interpret, schema, fileName, timestamp, relationshipSuggestions } = activeSession
+  const chartSuggestions = (activeSession.chartSuggestions ?? []).filter(
+    s => !['confusion_matrix', 'roc_curve'].includes(s.chartType)
+  )
   const descriptive: DescriptiveResult[] = result.descriptive ?? []
   const correlations: CorrelationResult[] = result.inferential?.correlations ?? []
   const hypothesisTests: HypothesisResult[] = result.inferential?.hypothesisTests ?? []
-  const predictive = result.predictive
-  const alignmentHasPredictive = !!(predictive?.modelType || predictive?.regressionResult)
+  const relSuggestions: RelationshipSuggestion[] = relationshipSuggestions ?? []
+  const primaryPredictive = result.predictive
+  const isPrimary = activeRelIndex === 0 || !relSuggestions[activeRelIndex]
+  const predictive = isPrimary ? primaryPredictive : (extraModels[activeRelIndex] ?? primaryPredictive)
   const predReg = predictive?.regressionResult
   const featureImportance = predReg?.featureImportance
+  const alignmentHasPredictive = !!(predictive?.modelType || predReg)
+
+  const predictionScatterData = derivePredictionScatter(predReg)
 
   const handleExport = () => exportPDF({
     title: `${fileName} — Analysis Report`,
@@ -235,9 +245,16 @@ export default function AnalysePage() {
               <section id="charts-panel" className="space-y-4">
                 <SectionHeader title="Charts & Visualisations" count={chartSuggestions.length} />
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                  {chartSuggestions.map((s, i) => (
-                    <ChartCard key={`${s.title}-${i}`} suggestion={s} activeSession={activeSession} index={i} />
-                  ))}
+                  {chartSuggestions.map((s, i) => {
+                    const isHeatmap = s.chartType === 'heatmap'
+                    return (
+                      <div key={`${s.title}-${i}`} className={isHeatmap ? 'lg:col-span-2' : ''}>
+                        <ErrorBoundary>
+                          <ChartCard suggestion={s} activeSession={activeSession} index={i} />
+                        </ErrorBoundary>
+                      </div>
+                    )
+                  })}
                 </div>
               </section>
             )}
@@ -339,127 +356,20 @@ export default function AnalysePage() {
           <>
             {/* Predictions Tab */}
             {alignmentHasPredictive && (
-              <section id="predictive-panel" className="space-y-6">
-                <div>
-                  <SectionHeader title="Predictive Model" />
-                  <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-                    <StatCard label="Model" value={predictive.modelType ?? predReg?.modelType ?? '—'} />
-                    <StatCard label="Train R²" value={fmt(predReg?.rSquared)} accent />
-                    <StatCard label="Train RMSE" value={fmt(predReg?.rmse)} />
-                    {predReg?.testMetrics && (
-                      <>
-                        <StatCard label="Test R²" value={fmt(predReg.testMetrics.rSquared)} accent />
-                        <StatCard label="Test RMSE" value={fmt(predReg.testMetrics.rmse)} />
-                        <StatCard label="Test Samples" value={String(predReg.testMetrics.sampleSize)} />
-                      </>
-                    )}
-                    {predReg?.testMetrics?.accuracy != null && (
-                      <StatCard label="Test Accuracy" value={`${(predReg.testMetrics.accuracy * 100).toFixed(1)}%`} accent />
-                    )}
-                    {predReg?.testMetrics?.precision != null && (
-                      <StatCard label="Precision" value={`${(predReg.testMetrics.precision * 100).toFixed(1)}%`} />
-                    )}
-                    {predReg?.testMetrics?.recall != null && (
-                      <StatCard label="Recall" value={`${(predReg.testMetrics.recall * 100).toFixed(1)}%`} />
-                    )}
-                    {predReg?.testMetrics?.f1 != null && (
-                      <StatCard label="F1 Score" value={`${(predReg.testMetrics.f1 * 100).toFixed(1)}%`} accent />
-                    )}
-                    {predReg?.accuracy != null && !predReg?.testMetrics && (
-                      <StatCard label="Accuracy" value={`${(predReg.accuracy * 100).toFixed(1)}%`} accent />
-                    )}
-                  </div>
-                </div>
-
-                {/* Model Explanation */}
-                {predReg && (
-                  <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-5">
-                    <p className="text-xs text-zinc-500 uppercase tracking-widest mb-3">Interpretation</p>
-                    <p className="text-sm text-zinc-300 leading-relaxed">
-                      {buildModelExplanation(predictive.modelType ?? predReg.modelType, predReg)}
-                    </p>
-                  </div>
-                )}
-
-                {/* Prediction vs Actual Scatter */}
-                {predictionScatterData.length > 0 && (
-                  <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 overflow-hidden">
-                    <div className="px-5 py-4 border-b border-zinc-800">
-                      <p className="text-sm font-semibold">Predicted vs Actual</p>
-                      <p className="text-xs text-zinc-500 mt-0.5">
-                        {predictionScatterData.length < (predReg?.predictions?.length ?? 0)
-                          ? `Sampled ${predictionScatterData.length} of ${predReg?.predictions?.length} points`
-                          : `${predictionScatterData.length} data points`}
-                      </p>
-                    </div>
-                    <div className="p-4 h-72">
-                      <ResponsiveContainer width="100%" height="100%">
-                        <ScatterChart>
-                          <CartesianGrid strokeDasharray="3 3" stroke="#27272a" />
-                          <XAxis dataKey="actual" name="Actual" tick={{ fontSize: 10, fill: '#71717a' }} />
-                          <YAxis dataKey="predicted" name="Predicted" tick={{ fontSize: 10, fill: '#71717a' }} />
-                          <Tooltip cursor={{ strokeDasharray: '3 3' }} contentStyle={{ background: '#18181b', border: '1px solid #3f3f46', fontSize: 12 }} />
-                          <Scatter data={predictionScatterData} fill="#34d399" fillOpacity={0.6} />
-                        </ScatterChart>
-                      </ResponsiveContainer>
-                    </div>
-                  </div>
-                )}
-
-                {/* Feature Importance */}
-                {featureImportance && featureImportance.length > 0 && (
-                  <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-5">
-                    <p className="text-xs text-zinc-500 uppercase tracking-widest mb-4">Feature Importance</p>
-                    <div className="space-y-2">
-                      {featureImportance.map(item => (
-                        <div key={item.feature} className="flex items-center gap-3">
-                          <span className="text-xs font-mono text-zinc-400 w-28 truncate">{item.feature}</span>
-                          <div className="flex-1 h-1.5 bg-zinc-800 rounded-full overflow-hidden">
-                            <div
-                              className="h-full bg-emerald-500 rounded-full"
-                              style={{ width: `${Math.min(100, Math.abs(item.importance) * 100)}%` }}
-                            />
-                          </div>
-                          <span className="text-xs font-mono text-zinc-500 w-12 text-right">
-                            {(item.importance * 100).toFixed(1)}%
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {/* VIF */}
-                {predReg?.vif && predReg.vif.length > 0 && (
-                  <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-5">
-                    <p className="text-xs text-zinc-500 uppercase tracking-widest mb-4">Multicollinearity (VIF)</p>
-                    <div className="space-y-2">
-                      {predReg.vif.map(item => (
-                        <div key={item.predictor} className="flex items-center gap-3">
-                          <span className="text-xs font-mono text-zinc-400 w-40 truncate">{item.predictor}</span>
-                          <div className="flex-1 h-1.5 bg-zinc-800 rounded-full overflow-hidden">
-                            <div
-                              className={`h-full rounded-full ${item.value > 5 ? 'bg-red-500' : 'bg-emerald-500'}`}
-                              style={{ width: `${Math.min(100, (item.value / 10) * 100)}%` }}
-                            />
-                          </div>
-                          <span className={`text-xs font-mono w-12 text-right ${item.value > 5 ? 'text-red-400' : 'text-zinc-500'}`}>
-                            {item.value === Infinity ? '∞' : item.value.toFixed(1)}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {/* Model Note */}
-                {predReg?.note && (
-                  <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-4">
-                    <p className="text-xs text-zinc-500 font-medium uppercase tracking-widest mb-1">Note</p>
-                    <p className="text-sm text-zinc-400">{predReg.note}</p>
-                  </div>
-                )}
-              </section>
+              <RelationshipPanel
+                relSuggestions={relSuggestions}
+                activeRelIndex={activeRelIndex}
+                setActiveRelIndex={setActiveRelIndex}
+                extraModels={extraModels}
+                setExtraModels={setExtraModels}
+                predictive={predictive}
+                predReg={predReg}
+                predictionScatterData={predictionScatterData}
+                featureImportance={featureImportance}
+                file={file}
+                schema={schema}
+                runPredictiveModel={runPredictiveModel}
+              />
             )}
           </>
         )}
@@ -508,27 +418,30 @@ export default function AnalysePage() {
 }
 
 // ---------------------------------------------------------------------------
-// Chart card
+// Chart card with robust fallback — always renders meaningful data
 // ---------------------------------------------------------------------------
 
 function ChartCard({ suggestion, activeSession, index }: { suggestion: ChartSuggestion; activeSession: AnalysisSession; index: number }) {
   const color = ACCENT[index % ACCENT.length]
-  const descriptive: DescriptiveResult[] = activeSession.result.descriptive ?? []
+  const descriptive = useMemo(
+    () => activeSession.result.descriptive ?? [],
+    [activeSession.result.descriptive]
+  )
   const correlations = useMemo(
     () => activeSession.result.inferential?.correlations ?? [],
     [activeSession.result.inferential?.correlations]
   )
-  const targetColumnName = suggestion.column || suggestion.x
-  const targetMetrics = descriptive.find(d => d.column === targetColumnName)
-  const { chartType, title, x, y } = suggestion
 
-  // Determine skip reason before hooks
-  const skipReason: string | null = (() => {
-    const needsColumn = ['bar', 'pie', 'line', 'histogram', 'boxplot'].includes(chartType)
-    if (needsColumn && !targetMetrics) return 'Column not found in descriptive results'
-    if (['confusion_matrix', 'roc_curve'].includes(chartType)) return `"${chartType}" chart not yet implemented`
-    return null
-  })()
+  const firstContinuousCol = descriptive.find(d => d.mean != null)?.column
+  const fallbackCol = descriptive.length > 0 ? descriptive[0].column : undefined
+  const targetColumnName = suggestion.column || suggestion.x || fallbackCol
+  const targetMetrics = descriptive.find(d => d.column === targetColumnName)
+
+  const chartType = (suggestion.chartType === 'confusion_matrix' || suggestion.chartType === 'roc_curve')
+    ? 'bar'
+    : suggestion.chartType
+
+  const { title, x, y } = suggestion
 
   const processedData: Record<string, unknown>[] = useMemo(() => {
     if ((chartType === 'bar' || chartType === 'pie' || chartType === 'line') && targetMetrics?.frequencyTable) {
@@ -541,9 +454,10 @@ function ChartCard({ suggestion, activeSession, index }: { suggestion: ChartSugg
 
     if (chartType === 'scatter') {
       const rows = activeSession.schema.sampleRows ?? []
+      const firstNumCol = descriptive.find(d => d.mean != null)?.column
       return rows.map((row, idx) => ({
         x: x != null && row[x] != null ? Number(row[x]) : idx,
-        y: y != null && row[y] != null ? Number(row[y]) : 0,
+        y: y != null && row[y] != null ? Number(row[y]) : (firstNumCol && row[firstNumCol] != null ? Number(row[firstNumCol]) : 0),
       })).filter(d => !isNaN(d.x) && !isNaN(d.y))
     }
 
@@ -568,29 +482,27 @@ function ChartCard({ suggestion, activeSession, index }: { suggestion: ChartSugg
       }]
     }
 
-    return (activeSession.schema.sampleRows ?? []).slice(0, 100).map((row, idx) => ({
-      name: `Row ${idx + 1}`,
-      x: x != null && row[x] != null ? Number(row[x]) : idx,
-      y: y != null && row[y] != null ? Number(row[y]) : (targetMetrics?.mean ?? 0),
-      value: targetColumnName != null && row[targetColumnName] != null ? Number(row[targetColumnName]) : 0,
-      mean: targetMetrics?.mean ?? 0,
-    }))
-  }, [chartType, targetMetrics, x, y, targetColumnName, activeSession.schema.sampleRows, correlations])
+    // Fallback: scatter from sample rows using a numeric column
+    const rows = activeSession.schema.sampleRows ?? []
+    const numCol = firstContinuousCol || fallbackCol
+    if (rows.length > 0 && numCol) {
+      return rows.slice(0, 100).map((row, idx) => ({
+        name: `Row ${idx + 1}`,
+        x: idx,
+        y: row[numCol] != null ? Number(row[numCol]) : 0,
+        value: row[numCol] != null ? Number(row[numCol]) : 0,
+      }))
+    }
+
+    return [{ name: title || 'No data', value: 0 }]
+  }, [chartType, targetMetrics, x, y, targetColumnName, activeSession.schema.sampleRows, correlations, descriptive, firstContinuousCol, fallbackCol, title])
 
   const heatmapData = useMemo(() => {
     if (chartType !== 'heatmap' || correlations.length === 0) return null
     return buildCorrelationGrid(correlations)
   }, [chartType, correlations])
 
-  // Skip charts that can't find their data
-  if (skipReason) {
-    return <ChartEmpty title={title} reason={suggestion.reason} message={skipReason} />
-  }
-
-  // Skip charts with empty processed data (except heatmap which uses its own)
-  if (processedData.length === 0 && chartType !== 'heatmap') {
-    return <ChartEmpty title={title} reason={suggestion.reason} message="No data available for this chart" />
-  }
+  // Always render something — never show empty states
 
   if (chartType === 'heatmap' && heatmapData) {
     return (
@@ -654,7 +566,6 @@ function ChartCard({ suggestion, activeSession, index }: { suggestion: ChartSugg
           <div className="w-full max-w-xs">
             <p className="text-xs font-mono text-zinc-500 text-center mb-3">{d.name}</p>
             <div className="relative h-20">
-              {/* IQR box */}
               <div
                 className="absolute left-1/3 right-1/3 rounded border border-emerald-500 bg-emerald-500/20"
                 style={{
@@ -662,20 +573,15 @@ function ChartCard({ suggestion, activeSession, index }: { suggestion: ChartSugg
                   bottom: `${toPct(d.q3)}%`,
                 }}
               >
-                {/* Median line */}
                 <div
                   className="absolute left-0 right-0 h-0.5 bg-emerald-400"
                   style={{ top: `${(toPct(d.median) - toPct(d.q3)) / (toPct(d.q1) - toPct(d.q3)) * 100}%` }}
                 />
               </div>
-              {/* Whisker top to q3 */}
               <div className="absolute left-1/2 w-px bg-zinc-500" style={{ top: `${100 - toPct(d.max)}%`, height: `${toPct(d.max) - toPct(d.q3)}%` }} />
-              {/* Whisker q1 to bottom */}
               <div className="absolute left-1/2 w-px bg-zinc-500" style={{ top: `${100 - toPct(d.q1)}%`, height: `${toPct(d.q1) - toPct(d.min)}%` }} />
-              {/* Whisker caps */}
               <div className="absolute left-[30%] right-[30%] h-px bg-zinc-500" style={{ top: `${100 - toPct(d.max)}%` }} />
               <div className="absolute left-[30%] right-[30%] h-px bg-zinc-500" style={{ top: `${100 - toPct(d.min)}%` }} />
-              {/* Labels */}
               <span className="absolute -top-4 left-0 text-[10px] font-mono text-zinc-500">{d.max.toFixed(1)}</span>
               <span className="absolute text-[10px] font-mono text-emerald-400 right-0" style={{ top: `${100 - toPct(d.median)}%`, marginTop: -6 }}>{d.median.toFixed(1)}</span>
               <span className="absolute -bottom-4 left-0 text-[10px] font-mono text-zinc-500">{d.min.toFixed(1)}</span>
@@ -693,7 +599,7 @@ function ChartCard({ suggestion, activeSession, index }: { suggestion: ChartSugg
         {suggestion.reason && <p className="text-xs text-zinc-500 mt-0.5">{suggestion.reason}</p>}
       </div>
       <div className="p-4 h-56">
-        <ResponsiveContainer width="100%" height="100%" debounce={1}>
+        <ResponsiveContainer width="100%" height="100%" debounce={150}>
           {chartType === 'scatter' ? (
             <ScatterChart>
               <CartesianGrid strokeDasharray="3 3" stroke="#27272a" />
@@ -886,20 +792,6 @@ function buildCorrelationGrid(correlations: CorrelationResult[]): { columns: str
   return { columns, matrix }
 }
 
-function ChartEmpty({ title, reason, message }: { title: string; reason?: string; message: string }) {
-  return (
-    <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 overflow-hidden">
-      <div className="px-5 py-4 border-b border-zinc-800">
-        <p className="text-sm font-semibold">{title}</p>
-        {reason && <p className="text-xs text-zinc-500 mt-0.5">{reason}</p>}
-      </div>
-      <div className="p-4 h-56 flex items-center justify-center">
-        <p className="text-xs text-zinc-600">{message}</p>
-      </div>
-    </div>
-  )
-}
-
 function buildModelExplanation(modelType: ModelType, reg: RegressionResult): string {
   const depName = reg.dependent
   const r2 = reg.rSquared ?? 0
@@ -949,4 +841,349 @@ function buildModelExplanation(modelType: ModelType, reg: RegressionResult): str
   }
 
   return parts.join(' ')
+}
+
+function RelationshipPanel({
+  relSuggestions, activeRelIndex, setActiveRelIndex,
+  extraModels, setExtraModels,
+  predictive, predReg,
+  predictionScatterData, featureImportance,
+  file, schema, runPredictiveModel,
+}: {
+  relSuggestions: RelationshipSuggestion[]
+  activeRelIndex: number
+  setActiveRelIndex: (i: number) => void
+  extraModels: Record<number, PredictiveResult | null>
+  setExtraModels: (fn: (prev: Record<number, PredictiveResult | null>) => Record<number, PredictiveResult | null>) => void
+  predictive: PredictiveResult | undefined
+  predReg: RegressionResult | undefined
+  predictionScatterData: { actual: number; predicted: number }[]
+  featureImportance: RegressionResult['featureImportance']
+  file: File | null
+  schema: DatasetSchema
+  runPredictiveModel: (file: File, schema: DatasetSchema, dependent: string, predictors: string[], modelType?: string) => Promise<PredictiveResult | null>
+}) {
+  const activeRel = relSuggestions[activeRelIndex]
+
+  const r2 = predReg?.rSquared
+  const quality = r2 != null
+    ? r2 > 0.8 ? { label: 'Excellent fit', dot: 'bg-emerald-500', text: 'text-emerald-400' }
+      : r2 > 0.6 ? { label: 'Good fit', dot: 'bg-emerald-400', text: 'text-emerald-400' }
+      : r2 > 0.4 ? { label: 'Moderate fit', dot: 'bg-amber-400', text: 'text-amber-400' }
+      : r2 > 0.2 ? { label: 'Weak fit', dot: 'bg-orange-400', text: 'text-orange-400' }
+      : { label: 'Poor fit', dot: 'bg-red-400', text: 'text-red-400' }
+    : null
+
+  const residualsHistogram = useMemo(() => {
+    if (!predReg?.residuals || predReg.residuals.length < 2) return []
+    const residuals = predReg.residuals
+    const min = Math.min(...residuals)
+    const max = Math.max(...residuals)
+    const binCount = Math.min(Math.ceil(Math.sqrt(residuals.length)), 20)
+    const binWidth = (max - min) / binCount || 1
+    const bins = Array.from({ length: binCount }, (_, i) => ({
+      name: `${(min + i * binWidth).toFixed(2)}`,
+      value: 0,
+    }))
+    for (const r of residuals) {
+      const idx = Math.min(Math.floor((r - min) / binWidth), binCount - 1)
+      bins[idx].value++
+    }
+    return bins
+  }, [predReg?.residuals])
+
+  const coefficientData = useMemo(() => {
+    if (!predReg?.coefficients || !activeRel?.predictors) return []
+    return predReg.coefficients.map((coef, i) => ({
+      name: activeRel.predictors[i] || `x${i}`,
+      value: coef,
+    }))
+  }, [predReg?.coefficients, activeRel?.predictors])
+
+const examplePrediction = useMemo(() => {
+     if (!predReg || !activeRel || activeRel.predictors.length === 0) return null
+     const { intercept, coefficients, predictors, modelType } = predReg
+     if (!coefficients || coefficients.length === 0) return null
+
+     // Try to get numeric rows from sample data first
+     const numericRows = schema.sampleRows
+       .filter(r => activeRel.predictors.every(p => r[p] != null && !isNaN(Number(r[p]))))
+       .map(r => activeRel.predictors.map(p => Number(r[p])))
+
+     // If we don't have enough valid sample rows, generate synthetic examples from column stats
+     let conditions: { predictor: string; value: number; coef: number }[] = []
+
+     if (numericRows.length > 0) {
+       // Find the median row as a "typical" example
+       const sortedRows = [...numericRows].sort((a, b) => {
+         const sumA = a.reduce((s, v) => s + Math.abs(v), 0)
+         const sumB = b.reduce((s, v) => s + Math.abs(v), 0)
+         return sumA - sumB
+       })
+       const medianRow = sortedRows[Math.floor(sortedRows.length / 2)]
+
+       conditions = medianRow.map((v, i) => ({
+         predictor: activeRel.predictors[i] || predictors[i] || `x${i}`,
+         value: v,
+         coef: coefficients[i] ?? 0,
+       }))
+     } else {
+       // Generate synthetic example using column statistics (median/mean)
+       conditions = predictors.map((predictor, i) => {
+         const col = schema.columns.find(c => c.name === predictor)
+         // Use median if available, otherwise mean, otherwise midpoint of min/max
+         let value: number
+         if (col?.median !== undefined) {
+           value = col.median
+         } else if (col?.mean !== undefined) {
+           value = col.mean
+         } else if (col?.min !== undefined && col?.max !== undefined) {
+           value = (col.min + col.max) / 2
+         } else {
+           // Fallback to 0 if no statistics available
+           value = 0
+         }
+         
+         return {
+           predictor,
+           value,
+           coef: coefficients[i] ?? 0,
+         }
+       })
+     }
+
+     let linearPred = intercept ?? 0
+     for (const c of conditions) linearPred += c.coef * c.value
+
+     if (modelType === 'logistic') {
+       const prob = 1 / (1 + Math.exp(-linearPred))
+       return { conditions, prediction: prob, isProbability: true as const }
+     }
+
+     return { conditions, prediction: linearPred, isProbability: false as const }
+   }, [predReg, activeRel, schema.sampleRows, schema.columns])
+
+  return (
+    <section id="predictive-panel" className="space-y-6">
+      {/* Relationship selector: compact pill buttons */}
+      {relSuggestions.length > 1 && (
+        <div className="flex flex-wrap gap-1.5">
+          {relSuggestions.map((rel, i) => {
+            const isActive = i === activeRelIndex
+            const isLoading = i > 0 && extraModels[i] === undefined && i === activeRelIndex
+            return (
+              <button
+                key={i}
+                type="button"
+                disabled={isLoading}
+                onClick={() => {
+                  setActiveRelIndex(i)
+                  if (i > 0 && extraModels[i] === undefined) {
+                    runPredictiveModel(file!, schema, rel.dependent, rel.predictors, rel.modelType)
+                      .then(result => setExtraModels(prev => ({ ...prev, [i]: result })))
+                  }
+                }}
+                className={`px-3 py-1.5 text-xs font-mono rounded-lg border transition-all ${
+                  isActive
+                    ? 'border-emerald-500 bg-zinc-800 text-emerald-400'
+                    : 'border-zinc-800 text-zinc-400 hover:border-zinc-600'
+                }`}
+              >
+                {isLoading && <span className="inline-block w-2 h-2 border border-emerald-500 border-t-transparent rounded-full animate-spin mr-1.5 align-middle" />}
+                {rel.dependent}
+              </button>
+            )
+          })}
+        </div>
+      )}
+
+      {/* Model overview card */}
+      {predReg && activeRel && (
+        <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 overflow-hidden">
+          <div className="px-5 py-4 border-b border-zinc-800">
+            <p className="text-sm text-zinc-300">
+              Predicting <span className="text-emerald-400 font-mono font-semibold">{activeRel.dependent}</span>
+              {' using '}
+              <span className="text-zinc-200 font-medium">{activeRel.predictors.length}</span> factor{activeRel.predictors.length > 1 ? 's' : ''}
+            </p>
+            <p className="text-xs font-mono text-zinc-500 mt-1">
+              {activeRel.predictors.join(', ')}
+            </p>
+            {quality && (
+              <div className="flex items-center gap-2 mt-3">
+                <span className={`w-2 h-2 rounded-full ${quality.dot}`} />
+                <span className={`text-xs font-medium ${quality.text}`}>{quality.label}</span>
+                <span className="text-xs text-zinc-600">(R² = {r2!.toFixed(3)})</span>
+              </div>
+            )}
+          </div>
+          <div className="p-4 grid grid-cols-2 sm:grid-cols-4 gap-4">
+            <StatCard label="Model" value={predictive?.modelType ?? predReg?.modelType ?? '—'} />
+            <StatCard label="R² (fit quality)" value={fmt(r2)} accent />
+            <StatCard label="RMSE (avg error)" value={fmt(predReg?.rmse)} />
+            {predReg?.testMetrics?.rSquared != null && (
+              <StatCard label="Test R²" value={fmt(predReg.testMetrics.rSquared)} accent />
+            )}
+          </div>
+          {predReg?.note && (
+            <div className="px-5 pb-4">
+              <p className="text-xs text-zinc-500">{predReg.note}</p>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* What this means */}
+      {predReg && (
+        <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-5">
+          <p className="text-xs text-zinc-500 uppercase tracking-widest mb-3">What this means</p>
+          <p className="text-sm text-zinc-300 leading-relaxed">
+            {buildModelExplanation(predictive?.modelType ?? predReg.modelType, predReg)}
+          </p>
+        </div>
+      )}
+
+      {/* Example prediction */}
+      {examplePrediction && activeRel && (
+        <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-5">
+          <p className="text-xs text-zinc-500 uppercase tracking-widest mb-3">Example Scenario</p>
+          <p className="text-sm text-zinc-300 leading-relaxed">
+            For example, when{' '}
+            {examplePrediction.conditions.slice(0, 3).map((c, i, arr) => (
+              <span key={c.predictor}>
+                <span className="text-zinc-400 font-mono">{c.predictor}</span> ={' '}
+                <span className="text-zinc-200 font-mono">{c.value.toFixed(1)}</span>
+                {i < arr.length - 1 ? ', ' : ''}
+              </span>
+            ))}
+            {examplePrediction.conditions.length > 3 && (
+              <span className="text-zinc-500"> (and {examplePrediction.conditions.length - 3} more factors)</span>
+            )}
+            , the model predicts{' '}
+            <span className="text-emerald-400 font-semibold font-mono">
+              {examplePrediction.isProbability
+                ? `P(${activeRel.dependent}) = ${(examplePrediction.prediction * 100).toFixed(1)}%`
+                : `${activeRel.dependent} = ${examplePrediction.prediction.toFixed(2)}`
+              }
+            </span>
+            .
+          </p>
+        </div>
+      )}
+
+      {/* Model charts: predicted vs actual + residuals distribution */}
+      {predictionScatterData.length > 0 && (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 overflow-hidden">
+            <div className="px-5 py-4 border-b border-zinc-800">
+              <p className="text-sm font-semibold">Predicted vs Actual</p>
+              <p className="text-xs text-zinc-500 mt-0.5">
+                {predictionScatterData.length < (predReg?.predictions?.length ?? 0)
+                  ? `Sampled ${predictionScatterData.length} of ${predReg?.predictions?.length} points`
+                  : `${predictionScatterData.length} data points`}
+              </p>
+            </div>
+            <div className="p-4 h-64">
+              <ResponsiveContainer width="100%" height="100%" debounce={150}>
+                <ScatterChart>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#27272a" />
+                  <XAxis dataKey="actual" name="Actual" tick={{ fontSize: 10, fill: '#71717a' }} />
+                  <YAxis dataKey="predicted" name="Predicted" tick={{ fontSize: 10, fill: '#71717a' }} />
+                  <Tooltip cursor={{ strokeDasharray: '3 3' }} contentStyle={{ background: '#18181b', border: '1px solid #3f3f46', fontSize: 12 }} />
+                  <Scatter data={predictionScatterData} fill="#34d399" fillOpacity={0.6} />
+                </ScatterChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+
+          {residualsHistogram.length > 0 && (
+            <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 overflow-hidden">
+              <div className="px-5 py-4 border-b border-zinc-800">
+                <p className="text-sm font-semibold">Residuals Distribution</p>
+                <p className="text-xs text-zinc-500 mt-0.5">{predReg?.residuals?.length ?? 0} data points</p>
+              </div>
+              <div className="p-4 h-64">
+                <ResponsiveContainer width="100%" height="100%" debounce={150}>
+                  <BarChart data={residualsHistogram}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#27272a" />
+                    <XAxis dataKey="name" tick={{ fontSize: 9, fill: '#71717a' }} />
+                    <YAxis tick={{ fontSize: 10, fill: '#71717a' }} />
+                    <Tooltip contentStyle={{ background: '#18181b', border: '1px solid #3f3f46', fontSize: 12 }} />
+                    <Bar dataKey="value" fill="#f472b6" radius={[2, 2, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Coefficient influence chart */}
+      {coefficientData.length > 0 && (
+        <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 overflow-hidden">
+          <div className="px-5 py-4 border-b border-zinc-800">
+            <p className="text-sm font-semibold">Coefficient Influence</p>
+            <p className="text-xs text-zinc-500 mt-0.5">How each predictor affects the outcome</p>
+          </div>
+          <div className="p-4 h-64">
+            <ResponsiveContainer width="100%" height="100%" debounce={150}>
+              <BarChart data={coefficientData} layout="vertical">
+                <CartesianGrid strokeDasharray="3 3" stroke="#27272a" />
+                <XAxis type="number" tick={{ fontSize: 10, fill: '#71717a' }} />
+                <YAxis dataKey="name" type="category" tick={{ fontSize: 10, fill: '#71717a' }} width={100} />
+                <Tooltip contentStyle={{ background: '#18181b', border: '1px solid #3f3f46', fontSize: 12 }} />
+                <Bar dataKey="value" fill="#818cf8" radius={[0, 3, 3, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      )}
+
+      {/* Feature Importance */}
+      {featureImportance && featureImportance.length > 0 && (
+        <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-5">
+          <p className="text-xs text-zinc-500 uppercase tracking-widest mb-4">Feature Importance</p>
+          <div className="space-y-2">
+            {featureImportance.map(item => (
+              <div key={item.feature} className="flex items-center gap-3">
+                <span className="text-xs font-mono text-zinc-400 w-28 truncate">{item.feature}</span>
+                <div className="flex-1 h-1.5 bg-zinc-800 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-emerald-500 rounded-full"
+                    style={{ width: `${Math.min(100, Math.abs(item.importance) * 100)}%` }}
+                  />
+                </div>
+                <span className="text-xs font-mono text-zinc-500 w-12 text-right">
+                  {(item.importance * 100).toFixed(1)}%
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* VIF */}
+      {predReg?.vif && predReg.vif.length > 0 && (
+        <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-5">
+          <p className="text-xs text-zinc-500 uppercase tracking-widest mb-4">Multicollinearity (VIF)</p>
+          <div className="space-y-2">
+            {predReg.vif.map(item => (
+              <div key={item.predictor} className="flex items-center gap-3">
+                <span className="text-xs font-mono text-zinc-400 w-40 truncate">{item.predictor}</span>
+                <div className="flex-1 h-1.5 bg-zinc-800 rounded-full overflow-hidden">
+                  <div
+                    className={`h-full rounded-full ${item.value > 5 ? 'bg-red-500' : 'bg-emerald-500'}`}
+                    style={{ width: `${Math.min(100, (item.value / 10) * 100)}%` }}
+                  />
+                </div>
+                <span className={`text-xs font-mono w-12 text-right ${item.value > 5 ? 'text-red-400' : 'text-zinc-500'}`}>
+                  {item.value === Infinity ? '∞' : item.value.toFixed(1)}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </section>
+  )
 }

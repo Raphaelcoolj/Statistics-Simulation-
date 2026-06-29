@@ -4,6 +4,8 @@ export interface Column {
   uniqueValues?: string[] | number[]
   min?: number
   max?: number
+  mean?: number
+  median?: number
   sampleValues?: unknown[]
   nullCount?: number
 }
@@ -216,6 +218,13 @@ export interface AIResponse {
   fallbackUsed: boolean
 }
 
+export interface RelationshipSuggestion {
+  dependent: string
+  predictors: string[]
+  modelType: ModelType
+  reason: string
+}
+
 export interface ProfilerOutput {
   analysisMap: {
     modelType: ModelType
@@ -229,6 +238,7 @@ export interface ProfilerOutput {
     descriptiveColumns: string[]
   }
   chartSuggestions: ChartSuggestion[]
+  relationshipSuggestions: RelationshipSuggestion[]
 }
 
 export type MissingValueStrategy =

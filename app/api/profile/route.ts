@@ -59,7 +59,8 @@ export async function POST(request: NextRequest) {
         title: `Distribution of ${name}`,
         reason: 'Descriptive backup view of column distribution.',
         column: name
-      }))
+      })),
+      relationshipSuggestions: [],
     }
 
     // Returning success: true ensures the frontend engine proceeds to /analyse smoothly

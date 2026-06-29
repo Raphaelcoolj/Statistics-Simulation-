@@ -6,6 +6,9 @@ import type {
   AnalysisRequest,
   AnalysisResult,
   ChartSuggestion,
+  RelationshipSuggestion,
+  PredictiveResult,
+  ModelType,
 } from '@/lib/types'
 
 export type AnalysisMode = 'smart' | 'manual'
@@ -25,6 +28,7 @@ export interface AnalysisSession {
   result: AnalysisResult
   chartSuggestions: ChartSuggestion[]
   interpret: InterpretResult
+  relationshipSuggestions?: RelationshipSuggestion[]
 }
 
 export type PipelineStatus =
@@ -89,7 +93,7 @@ export function useStatLab() {
       console.warn('[StatLab] Profiling failed, using rule-based fallback:', profileData.error)
     }
 
-    const { analysisMap, chartSuggestions } = profileData.success
+    const { analysisMap, chartSuggestions, relationshipSuggestions } = profileData.success
       ? profileData.output
       : {
           analysisMap: {
@@ -108,7 +112,25 @@ export function useStatLab() {
               reason: 'Fallback histogram for continuous column',
               column: c.name,
             })),
+          relationshipSuggestions: [],
         }
+
+    // Derive relationships: use AI suggestions if available, otherwise build from analysisMap
+    const relSuggestions: RelationshipSuggestion[] = relationshipSuggestions?.length > 0
+      ? relationshipSuggestions
+      : analysisMap.dependentVariable
+        ? [{
+            dependent: analysisMap.dependentVariable,
+            predictors: analysisMap.predictors,
+            modelType: analysisMap.modelType,
+            reason: analysisMap.dependentVariable && analysisMap.predictors.length > 0
+              ? `AI identified "${analysisMap.dependentVariable}" as target with ${analysisMap.predictors.length} predictor(s)`
+              : 'Primary relationship from profiling',
+          }]
+        : []
+
+    // Use first suggestion as primary model for the initial analysis
+    const primaryRel = relSuggestions[0]
 
     const chartColumns = new Set(chartSuggestions.flatMap((s: ChartSuggestion) => [s.column, s.x, s.y].filter(Boolean) as string[]))
 
@@ -121,15 +143,15 @@ export function useStatLab() {
       inferential: {
         correlationPairs: analysisMap.correlationPairs,
         hypothesisTests: analysisMap.hypothesisTests,
-        regression: analysisMap.dependentVariable
-          ? { dependent: analysisMap.dependentVariable, predictors: analysisMap.predictors }
+        regression: primaryRel
+          ? { dependent: primaryRel.dependent, predictors: primaryRel.predictors }
           : undefined,
       },
-      predictive: analysisMap.dependentVariable
+      predictive: primaryRel
         ? {
-            dependent: analysisMap.dependentVariable,
-            predictors: analysisMap.predictors,
-            modelType: analysisMap.modelType,
+            dependent: primaryRel.dependent,
+            predictors: primaryRel.predictors,
+            modelType: primaryRel.modelType,
           }
         : undefined,
     }
@@ -170,6 +192,7 @@ export function useStatLab() {
       result,
       chartSuggestions: chartSuggestions ?? result.chartSuggestions ?? [],
       interpret,
+      relationshipSuggestions: relSuggestions,
     }
 
     pushToHistory(session)
@@ -200,6 +223,7 @@ export function useStatLab() {
       result,
       chartSuggestions: result.chartSuggestions ?? [],
       interpret: { summary: '', perAnalysis: [], provider: '', fallbackUsed: false },
+      relationshipSuggestions: [],
     }
 
     pushToHistory(session)
@@ -207,6 +231,26 @@ export function useStatLab() {
     setPipelineStatus('done')
     return session
   }, [pushToHistory])
+
+  const runPredictiveModel = useCallback(async (
+    csvFile: File, csvSchema: DatasetSchema, dependent: string, predictors: string[], modelType?: string
+  ): Promise<PredictiveResult | null> => {
+    try {
+      const analyses: AnalysisRequest = {
+        mode: 'manual',
+        predictive: { dependent, predictors, modelType: modelType as ModelType | undefined },
+      }
+      const form = new FormData()
+      form.append('file', csvFile)
+      form.append('analyses', JSON.stringify(analyses))
+      const res = await fetch('/api/analyse', { method: 'POST', body: form })
+      const data = await res.json()
+      if (!data.success) throw new Error(data.error ?? 'Model failed')
+      return data.result?.predictive ?? null
+    } catch {
+      return null
+    }
+  }, [])
 
   const submit = useCallback(async () => {
     if (!file || !schema) return null
@@ -255,5 +299,6 @@ export function useStatLab() {
     submit,
     loadSession,
     reset,
+    runPredictiveModel,
   }
 }

@@ -41,7 +41,7 @@ async function callMistral(
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      model: 'mistral-7b-instruct',
+      model: 'open-mistral-7b',
       messages: [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userPrompt },
@@ -64,7 +64,7 @@ async function callGemini(
   userPrompt: string
 ): Promise<string> {
   const response = await fetch(
-    `https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${config.ai.geminiApiKey}`,
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${config.ai.geminiApiKey}`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -165,16 +165,25 @@ async function callDeepseek(
 export async function callAI(
   systemPrompt: string,
   userPrompt: string,
-  validator?: (content: string) => boolean
+  validator?: (content: string) => boolean,
+  preferredProvider?: AIProvider
 ): Promise<AIResponse> {
-  const providerConfigs = [
-    { name: 'groq' as AIProvider, key: config.ai.groqApiKey, fn: () => callGroq(systemPrompt, userPrompt) },
-    { name: 'mistral' as AIProvider, key: config.ai.mistralApiKey, fn: () => callMistral(systemPrompt, userPrompt) },
-    { name: 'gemini' as AIProvider, key: config.ai.geminiApiKey, fn: () => callGemini(systemPrompt, userPrompt) },
-    { name: 'deepseek' as AIProvider, key: config.ai.deepseekApiKey, fn: () => callDeepseek(systemPrompt, userPrompt) },
-    { name: 'huggingface' as AIProvider, key: config.ai.huggingfaceApiKey, fn: () => callHuggingFace(systemPrompt, userPrompt) },
+  const providerConfigs: { name: AIProvider; key: string | undefined; fn: () => Promise<string> }[] = [
+    { name: 'groq', key: config.ai.groqApiKey, fn: () => callGroq(systemPrompt, userPrompt) },
+    { name: 'mistral', key: config.ai.mistralApiKey, fn: () => callMistral(systemPrompt, userPrompt) },
+    { name: 'gemini', key: config.ai.geminiApiKey, fn: () => callGemini(systemPrompt, userPrompt) },
+    { name: 'deepseek', key: config.ai.deepseekApiKey, fn: () => callDeepseek(systemPrompt, userPrompt) },
+    { name: 'huggingface', key: config.ai.huggingfaceApiKey, fn: () => callHuggingFace(systemPrompt, userPrompt) },
   ]
-  const providers = providerConfigs.filter(p => p.key && typeof p.key === 'string' && p.key.trim().length > 0)
+
+  let providers = providerConfigs.filter(p => p.key && typeof p.key === 'string' && p.key.trim().length > 0)
+
+  if (preferredProvider) {
+    const preferred = providers.find(p => p.name === preferredProvider)
+    if (preferred) {
+      providers = [preferred, ...providers.filter(p => p.name !== preferredProvider)]
+    }
+  }
 
   for (const provider of providers) {
     try {
@@ -186,7 +195,7 @@ export async function callAI(
       return {
         content,
         provider: provider.name,
-        fallbackUsed: provider.name !== 'groq',
+        fallbackUsed: provider.name !== (preferredProvider ?? 'groq'),
       }
     } catch (error) {
       console.warn(

@@ -4,6 +4,7 @@ import { useState, useRef, useCallback, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import Papa from 'papaparse'
 import { useStatLab } from '@/components/StatLabProvider'
+import type { DatasetSchema, AnalysisRequest, Column } from '@/lib/types'
 
 const PIPELINE_LABELS = {
   idle: '',
@@ -22,7 +23,7 @@ export default function HomePage() {
     file, setFile,
     schema, setSchema,
     mode, setMode,
-    manualRequest, setManualRequest,
+    setManualRequest,
     pipelineStatus, pipelineError,
     submit,
   } = useStatLab()
@@ -39,13 +40,13 @@ export default function HomePage() {
         const fields = results.meta.fields ?? []
         const sampleRows = results.data as Record<string, string>[]
 
-        const columns = fields.map(name => {
+          const columns: Column[] = fields.map(name => {
           const values = sampleRows.map(r => r[name]).filter(Boolean)
           const numeric = values.every(v => !isNaN(Number(v)))
           return {
             name,
             type: numeric ? ('continuous' as const) : ('categorical' as const),
-            uniqueValues: [...new Set(values)].length,
+            uniqueValues: [...new Set(values)],
             sampleValues: values.slice(0, 5),
             nullCount: sampleRows.filter(r => !r[name]).length,
           }
@@ -56,9 +57,9 @@ export default function HomePage() {
           rowCount: sampleRows.length,
           columnCount: fields.length,
           columns,
-          sampleRows: sampleRows.slice(0, 15),
+          sampleRows: sampleRows.slice(0, 200),
         }
-        setSchema(s as any)
+        setSchema(s)
       },
     })
   }, [setFile, setSchema])
@@ -218,7 +219,7 @@ export default function HomePage() {
 
         {/* Configuration Setup Blocks */}
         {schema && mode === 'manual' && (
-          <ManualConfig schema={schema} value={manualRequest} onChange={setManualRequest} />
+          <ManualConfig key={schema.fileName} schema={schema} onChange={setManualRequest} />
         )}
 
         {/* Pipeline Monitor States */}
@@ -255,15 +256,13 @@ export default function HomePage() {
 // ---------------------------------------------------------------------------
 function ManualConfig({
   schema,
-  value,
   onChange,
 }: {
-  schema: any
-  value: any
-  onChange: (v: any) => void
+  schema: DatasetSchema
+  onChange: (v: Partial<AnalysisRequest>) => void
 }) {
   const cols = schema.columns
-  const numericCols = cols.filter((c: any) => c.type === 'continuous')
+  const numericCols = cols.filter((c: Column) => c.type === 'continuous')
 
   const [descriptiveCols, setDescriptiveCols] = useState<string[]>([])
   const [corrA, setCorrA] = useState('')
@@ -271,9 +270,40 @@ function ManualConfig({
   const [corrPairs, setCorrPairs] = useState<[string, string][]>([])
   const [dependent, setDependent] = useState('')
   const [predictors, setPredictors] = useState<string[]>([])
+  const [toast, setToast] = useState<string | null>(null)
+
+  const showToast = (msg: string) => {
+    setToast(msg)
+    setTimeout(() => setToast(null), 4000)
+  }
 
   useEffect(() => {
-    onChange({ descriptiveCols, corrPairs, dependent, predictors })
+    if (dependent && predictors.length >= 1) {
+      const predTypes = predictors.map((p: string) => cols.find((c: Column) => c.name === p)?.type)
+      const hasContinuous = predTypes.some(t => t === 'continuous')
+      const hasCategorical = predTypes.some(t => t === 'categorical' || t === 'binary')
+      if (hasContinuous && hasCategorical) {
+        showToast('Mixed column types for prediction — categorical predictors will be one-hot encoded.')
+      }
+    }
+  }, [dependent, predictors, cols])
+
+  useEffect(() => {
+    onChange({
+      mode: 'manual',
+      descriptive: descriptiveCols.length > 0 ? {
+        columns: descriptiveCols,
+        measures: ['central', 'spread', 'distribution'],
+      } : undefined,
+      inferential: corrPairs.length > 0 || dependent ? {
+        correlationPairs: corrPairs,
+        regression: dependent ? { dependent, predictors } : undefined,
+      } : undefined,
+      predictive: dependent ? {
+        dependent,
+        predictors,
+      } : undefined,
+    })
   }, [descriptiveCols, corrPairs, dependent, predictors, onChange])
 
   const addPair = () => {
@@ -286,14 +316,19 @@ function ManualConfig({
   }
 
   return (
-    <div className="space-y-5 rounded-xl border border-zinc-800 bg-zinc-900/30 p-5 shadow-sm">
+    <div className="space-y-5 rounded-xl border border-zinc-800 bg-zinc-900/30 p-5 shadow-sm relative">
+      {toast && (
+        <div className="absolute top-3 right-3 left-3 z-10 rounded-lg bg-amber-950/90 border border-amber-800/50 px-4 py-2.5 text-xs text-amber-400 shadow-lg animate-in fade-in slide-in-from-top-1">
+          {toast}
+        </div>
+      )}
       <p className="text-xs font-semibold text-zinc-300">Manual Configuration</p>
 
       {/* Descriptive Selector */}
       <div className="space-y-1.5">
         <label className="text-[10px] text-zinc-500 font-bold uppercase tracking-wider">Descriptive Columns</label>
         <div className="flex flex-wrap gap-1.5">
-          {cols.map((col: any) => {
+          {cols.map((col: Column) => {
             const isSelected = descriptiveCols.includes(col.name)
             return (
               <button
@@ -319,11 +354,11 @@ function ManualConfig({
         <div className="flex gap-2">
           <select value={corrA} onChange={e => setCorrA(e.target.value)} className="flex-1 bg-zinc-900 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs text-zinc-300 focus:outline-none focus:border-zinc-700">
             <option value="">Column A</option>
-            {numericCols.map((c: any) => <option key={c.name} value={c.name} className="bg-zinc-900">{c.name}</option>)}
+            {numericCols.map((c: Column) => <option key={c.name} value={c.name} className="bg-zinc-900">{c.name}</option>)}
           </select>
           <select value={corrB} onChange={e => setCorrB(e.target.value)} className="flex-1 bg-zinc-900 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs text-zinc-300 focus:outline-none focus:border-zinc-700">
             <option value="">Column B</option>
-            {numericCols.map((c: any) => <option key={c.name} value={c.name} className="bg-zinc-900">{c.name}</option>)}
+            {numericCols.map((c: Column) => <option key={c.name} value={c.name} className="bg-zinc-900">{c.name}</option>)}
           </select>
           <button type="button" onClick={addPair} className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-xs text-zinc-950 font-semibold transition-colors shadow-sm">Add</button>
         </div>
@@ -344,13 +379,13 @@ function ManualConfig({
         <label className="text-[10px] text-zinc-500 font-bold uppercase tracking-wider">Regression Target</label>
         <select value={dependent} onChange={e => { setDependent(e.target.value); setPredictors([]) }} className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs text-zinc-300 focus:outline-none focus:border-zinc-700">
           <option value="">None</option>
-          {cols.map((c: any) => <option key={c.name} value={c.name} className="bg-zinc-900">{c.name}</option>)}
+          {cols.map((c: Column) => <option key={c.name} value={c.name} className="bg-zinc-900">{c.name}</option>)}
         </select>
         {dependent && (
           <div className="mt-2.5 space-y-1.5">
             <p className="text-[10px] text-zinc-500 font-bold uppercase tracking-wider">Predictors</p>
             <div className="flex flex-wrap gap-1.5">
-              {cols.filter((c: any) => c.name !== dependent).map((col: any) => {
+              {cols.filter((c: Column) => c.name !== dependent).map((col: Column) => {
                 const isPred = predictors.includes(col.name)
                 return (
                   <button

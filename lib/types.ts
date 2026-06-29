@@ -65,8 +65,20 @@ export interface DescriptiveResult {
   kurtosis?: number
   count: number
   nullCount: number
+  outlierCount?: number
   frequencyTable?: Record<string, number>
   note?: string
+}
+
+export interface TestMetrics {
+  rSquared?: number
+  rmse?: number
+  accuracy?: number
+  precision?: number
+  recall?: number
+  f1?: number
+  aucRoc?: number
+  sampleSize: number
 }
 
 export interface CorrelationResult {
@@ -96,6 +108,9 @@ export interface RegressionResult {
   accuracy?: number
   predictions: number[]
   residuals?: number[]
+  testPredictions?: number[]
+  testMetrics?: TestMetrics
+  vif?: { predictor: string; value: number }[]
   featureImportance?: {
     feature: string
     importance: number

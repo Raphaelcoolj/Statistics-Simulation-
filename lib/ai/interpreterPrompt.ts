@@ -95,7 +95,7 @@ export async function runInterpreter(
 ): Promise<Pick<InterpretResponseBody, 'summary' | 'perAnalysis'> & { provider: string; fallbackUsed: boolean }> {
   const system = buildInterpreterSystemPrompt()
   const user = buildInterpreterUserPrompt(schema, result)
-  const response = await callAI(system, user, validateInterpreterResponse)
+  const response = await callAI(system, user, validateInterpreterResponse, 'groq')
   const parsed = parseInterpreterResponse(response.content)
   return {
     ...parsed,

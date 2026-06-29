@@ -84,20 +84,38 @@ export function useStatLab() {
       body: JSON.stringify({ schema: csvSchema }),
     })
     const profileData = await profileRes.json()
-    // Safety Fallback Check: Prevents the mapping crash from your 1st image
-const output = profileData?.output || { 
-  analysisMap: { descriptiveColumns: csvSchema.columns.map(c => c.name) }, 
-  chartSuggestions: [] 
-}
-    if (!profileData.success) throw new Error(profileData.error ?? 'Profiling failed')
-        
 
-    const { analysisMap, chartSuggestions } = profileData.output
+    if (!profileData.success) {
+      console.warn('[StatLab] Profiling failed, using rule-based fallback:', profileData.error)
+    }
+
+    const { analysisMap, chartSuggestions } = profileData.success
+      ? profileData.output
+      : {
+          analysisMap: {
+            modelType: 'linear' as const,
+            dependentVariable: null,
+            predictors: [],
+            correlationPairs: [],
+            hypothesisTests: [],
+            descriptiveColumns: csvSchema.columns.map(c => c.name),
+          },
+          chartSuggestions: csvSchema.columns
+            .filter(c => c.type === 'continuous')
+            .map(c => ({
+              chartType: 'histogram' as const,
+              title: `Distribution of ${c.name}`,
+              reason: 'Fallback histogram for continuous column',
+              column: c.name,
+            })),
+        }
+
+    const chartColumns = new Set(chartSuggestions.flatMap((s: ChartSuggestion) => [s.column, s.x, s.y].filter(Boolean) as string[]))
 
     const analyses: AnalysisRequest = {
       mode: 'smart',
       descriptive: {
-        columns: analysisMap.descriptiveColumns,
+        columns: [...new Set([...analysisMap.descriptiveColumns, ...chartColumns])],
         measures: ['central', 'spread', 'distribution'],
       },
       inferential: {
@@ -198,9 +216,9 @@ const output = profileData?.output || {
       } else {
         const analyses: AnalysisRequest = {
           mode: 'manual',
-          descriptive: manualRequest.descriptive,
-          inferential: manualRequest.inferential,
-          predictive: manualRequest.predictive,
+          ...manualRequest.descriptive && { descriptive: manualRequest.descriptive },
+          ...manualRequest.inferential && { inferential: manualRequest.inferential },
+          ...manualRequest.predictive && { predictive: manualRequest.predictive },
         }
         return await runManualPipeline(file, schema, analyses)
       }

@@ -1,5 +1,6 @@
 import * as ss from 'simple-statistics'
 import type { Column, Row, DescriptiveResult } from '@/lib/types'
+import { detectOutliersIQR } from '@/lib/stats/preprocessing'
 
 function extractNumeric(data: Row[], columnName: string): number[] {
   const nums: number[] = []
@@ -60,6 +61,7 @@ export function computeDescriptive(data: Row[], column: Column): DescriptiveResu
     base.iqr = safeCompute(() => ss.interquartileRange(numeric))
     base.skewness = safeCompute(() => ss.sampleSkewness(numeric))
     base.kurtosis = safeCompute(() => ss.sampleKurtosis(numeric))
+    base.outlierCount = safeCompute(() => detectOutliersIQR(data, column.name).count)
 
     return base
   }

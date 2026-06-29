@@ -6,6 +6,7 @@ import type {
   Row, Column, ModelType, RegressionResult,
   PredictiveResult, AnalysisRequest
 } from '@/lib/types'
+import { preprocessForModel, trainTestSplit, computeVIF } from '@/lib/stats/preprocessing'
 
 function extractNumeric(data: Row[], columnName: string): number[] {
   const nums: number[] = []
@@ -26,41 +27,6 @@ function isMissing(val: unknown): boolean {
   if (val === null || val === undefined || val === '') return true
   if (typeof val === 'string' && ['NA', 'NaN', 'null', 'N/A', 'na', 'n/a'].includes(val)) return true
   return false
-}
-
-function imputePredictorMissing(data: Row[], columns: Column[]): Row[] {
-  const cleaned = data.map(row => ({ ...row }))
-  for (const col of columns) {
-    if (col.type === 'continuous') {
-      const vals = extractNumeric(cleaned, col.name)
-      const mean = vals.length > 0 ? ss.mean(vals) : 0
-      for (const row of cleaned) {
-        if (isMissing(row[col.name])) row[col.name] = mean
-      }
-    } else if (col.type === 'ordinal') {
-      const vals = extractNumeric(cleaned, col.name)
-      const median = vals.length > 0 ? ss.median(vals) : 0
-      for (const row of cleaned) {
-        if (isMissing(row[col.name])) row[col.name] = median
-      }
-    } else {
-      const strVals: string[] = []
-      for (const row of cleaned) {
-        if (!isMissing(row[col.name])) strVals.push(String(row[col.name]))
-      }
-      const freq: Record<string, number> = {}
-      let modeVal = ''
-      let maxFreq = 0
-      for (const v of strVals) {
-        freq[v] = (freq[v] || 0) + 1
-        if (freq[v] > maxFreq) { maxFreq = freq[v]; modeVal = v }
-      }
-      for (const row of cleaned) {
-        if (isMissing(row[col.name])) row[col.name] = modeVal
-      }
-    }
-  }
-  return cleaned
 }
 
 export function selectModel(
@@ -535,6 +501,28 @@ export function runRandomForest(
   return result
 }
 
+function computeLinearPredictions(
+  data: Row[], dependent: string, predictors: string[], intercept: number, coefficients: number[]
+): number[] {
+  const predictions: number[] = []
+  for (const row of data) {
+    const depVal = row[dependent]
+    if (depVal === null || depVal === undefined || depVal === '') continue
+    if (isNaN(Number(depVal))) continue
+    let pred = intercept
+    let valid = true
+    for (let i = 0; i < predictors.length; i++) {
+      const val = row[predictors[i]]
+      if (val === null || val === undefined || val === '') { valid = false; break }
+      const num = Number(val)
+      if (isNaN(num)) { valid = false; break }
+      pred += (coefficients[i] ?? 0) * num
+    }
+    if (valid) predictions.push(pred)
+  }
+  return predictions
+}
+
 export function runPredictive(
   data: Row[],
   columns: Column[],
@@ -558,53 +546,154 @@ export function runPredictive(
     return defaultResult
   }
 
-  const depCol = columns.find(c => c.name === request.dependent)
-  const predCols = request.predictors.map(p => columns.find(c => c.name === p)).filter(Boolean) as Column[]
+  const colMap = new Map(columns.map(c => [c.name, c]))
+  const depCol = colMap.get(request.dependent)
+  const predCols = request.predictors.map(p => colMap.get(p)).filter(Boolean) as Column[]
   if (!depCol || predCols.length === 0) {
     defaultResult.regressionResult.note = 'Dependent or predictor column not found in schema'
     return defaultResult
   }
 
-  // Drop rows where dependent is missing
-  let cleanData = data.filter(row => !isMissing(row[request.dependent]))
-  const dropped = data.length - cleanData.length
+  const modelType = request.modelType ?? selectModel(depCol, predCols, data)
 
-  // Impute missing predictors
-  cleanData = imputePredictorMissing(cleanData, predCols)
+  // Preprocess: impute, encode categoricals, standardize continuous
+  const preprocessed = preprocessForModel(data, request.dependent, request.predictors, columns)
 
-  const modelType = request.modelType ?? selectModel(depCol, predCols, cleanData)
+  // Build expanded predictor list: continuous stay as-is, categoricals replaced by encoded columns
+  const expandedPredictors: string[] = []
+  const preprocessNotes: string[] = []
+  for (const p of request.predictors) {
+    const col = colMap.get(p)
+    if (!col) continue
+    if (col.type === 'categorical' || col.type === 'binary') {
+      const encoded = preprocessed.encoded[p]
+      if (encoded && encoded.length > 0) {
+        expandedPredictors.push(...encoded)
+        preprocessNotes.push(`"${p}" one-hot encoded to ${encoded.length} columns`)
+      }
+    } else {
+      expandedPredictors.push(p)
+    }
+  }
+
+  if (preprocessed.standardized.length > 0) {
+    preprocessNotes.push(`${preprocessed.standardized.length} continuous predictor(s) standardized (z-score)`)
+  }
+
+  // Train/test split (skip for timeseries which needs temporal order)
+  const useTrainTest = modelType !== 'timeseries' && preprocessed.data.length >= 30
+  const trainData = useTrainTest ? trainTestSplit(preprocessed.data).train : preprocessed.data
+  const testData = useTrainTest ? trainTestSplit(preprocessed.data).test : []
 
   let regressionResult: RegressionResult
   switch (modelType) {
     case 'linear':
-      regressionResult = runLinearRegression(cleanData, request.dependent, request.predictors[0])
+      regressionResult = runLinearRegression(trainData, request.dependent, request.predictors[0])
       break
     case 'polynomial':
-      regressionResult = runPolynomialRegression(cleanData, request.dependent, request.predictors[0])
+      regressionResult = runPolynomialRegression(trainData, request.dependent, request.predictors[0])
       break
     case 'multiple':
-      regressionResult = runMultipleRegression(cleanData, request.dependent, request.predictors)
+      regressionResult = runMultipleRegression(trainData, request.dependent, expandedPredictors.length > 0 ? expandedPredictors : request.predictors)
       break
     case 'logistic':
-      regressionResult = runLogisticRegression(cleanData, request.dependent, request.predictors)
+      regressionResult = runLogisticRegression(trainData, request.dependent, expandedPredictors.length > 0 ? expandedPredictors : request.predictors)
       break
     case 'timeseries': {
       const timeCol = predCols.find(c => c.type === 'datetime')
-      regressionResult = runTimeSeriesRegression(cleanData, request.dependent, timeCol?.name ?? request.predictors[0])
+      regressionResult = runTimeSeriesRegression(preprocessed.data, request.dependent, timeCol?.name ?? request.predictors[0])
       break
     }
     case 'randomforest':
-      regressionResult = runRandomForest(cleanData, request.dependent, request.predictors, depCol.type)
+      regressionResult = runRandomForest(trainData, request.dependent, expandedPredictors.length > 0 ? expandedPredictors : request.predictors, depCol.type)
       break
     default:
-      regressionResult = runLinearRegression(cleanData, request.dependent, request.predictors[0])
+      regressionResult = runLinearRegression(trainData, request.dependent, request.predictors[0])
   }
 
-  if (dropped > 0) {
-    const notePrefix = `${dropped} row(s) dropped due to missing dependent variable values`
+  // Compute test metrics for linear models with coefficients
+  if (useTrainTest && testData.length >= 10 && regressionResult.coefficients.length > 0) {
+    const testPreds = computeLinearPredictions(testData, regressionResult.dependent, expandedPredictors.length > 0 ? expandedPredictors : request.predictors, regressionResult.intercept, regressionResult.coefficients)
+    if (testPreds.length > 0) {
+      regressionResult.testPredictions = testPreds
+
+      const actualValues: number[] = []
+      let ssRes = 0
+      let ssTot = 0
+      for (const row of testData) {
+        const actual = typeof row[regressionResult.dependent] === 'number' ? row[regressionResult.dependent] : Number(row[regressionResult.dependent])
+        if (!isNaN(actual as number)) {
+          actualValues.push(actual as number)
+          ssRes += ((actual as number) - testPreds[actualValues.length - 1]) ** 2
+        }
+      }
+      if (actualValues.length >= 10) {
+        const actualMean = ss.mean(actualValues)
+        ssTot = actualValues.reduce((s, v) => s + (v - actualMean) ** 2, 0)
+        const testRSq = ssTot > 0 ? 1 - ssRes / ssTot : 0
+        const testRMse = Math.sqrt(ssRes / actualValues.length)
+        regressionResult.testMetrics = {
+          rSquared: Math.max(0, testRSq),
+          rmse: testRMse,
+          sampleSize: actualValues.length,
+        }
+
+        // Classification metrics for logistic
+        if (regressionResult.modelType === 'logistic') {
+          const isBinary = actualValues.every(v => v === 0 || v === 1)
+          if (isBinary) {
+            const roundedPreds = testPreds.map(p => Math.round(Math.max(0, Math.min(1, p))))
+            let tp = 0, fp = 0, tn = 0, fn = 0
+            for (let i = 0; i < actualValues.length; i++) {
+              if (roundedPreds[i] === 1 && actualValues[i] === 1) tp++
+              else if (roundedPreds[i] === 1 && actualValues[i] === 0) fp++
+              else if (roundedPreds[i] === 0 && actualValues[i] === 0) tn++
+              else if (roundedPreds[i] === 0 && actualValues[i] === 1) fn++
+            }
+            const accuracy = (tp + tn) / (tp + tn + fp + fn)
+            const precision = tp + fp > 0 ? tp / (tp + fp) : 0
+            const recall = tp + fn > 0 ? tp / (tp + fn) : 0
+            const f1 = precision + recall > 0 ? 2 * precision * recall / (precision + recall) : 0
+            regressionResult.testMetrics.accuracy = accuracy
+            regressionResult.testMetrics.precision = precision
+            regressionResult.testMetrics.recall = recall
+            regressionResult.testMetrics.f1 = f1
+          }
+        }
+
+        regressionResult.note = regressionResult.note
+          ? `${regressionResult.note} | Test set: ${actualValues.length} samples`
+          : `Test set: ${actualValues.length} samples`
+      }
+    }
+  }
+
+  // VIF check for multicollinearity (only for multiple regression)
+  if ((modelType === 'multiple' || modelType === 'linear') && expandedPredictors.length >= 2) {
+    const vifResults = computeVIF(preprocessed.data, expandedPredictors.length > 0 ? expandedPredictors : request.predictors, columns)
+    if (vifResults.length > 0) {
+      regressionResult.vif = vifResults
+      const highVif = vifResults.filter(v => v.value > 5)
+      if (highVif.length > 0) {
+        const highNames = highVif.map(v => `${v.predictor} (${v.value.toFixed(1)})`).join(', ')
+        regressionResult.note = regressionResult.note
+          ? `${regressionResult.note} | High multicollinearity (VIF>5): ${highNames}`
+          : `High multicollinearity (VIF>5): ${highNames}`
+      }
+    }
+  }
+
+  if (preprocessed.droppedRows > 0) {
+    const notePrefix = `${preprocessed.droppedRows} row(s) dropped due to missing dependent variable values`
     regressionResult.note = regressionResult.note
       ? `${notePrefix}. ${regressionResult.note}`
       : notePrefix
+  }
+
+  if (preprocessNotes.length > 0) {
+    regressionResult.note = regressionResult.note
+      ? `${regressionResult.note} | Preprocessing: ${preprocessNotes.join('; ')}.`
+      : `Preprocessing: ${preprocessNotes.join('; ')}.`
   }
 
   const predictiveResult: PredictiveResult = {

@@ -123,6 +123,6 @@ export async function runProfiler(
 ): Promise<ProfilerOutput> {
   const system = buildProfilerSystemPrompt()
   const user = buildProfilerUserPrompt(schema)
-  const response = await callAI(system, user, validateProfilerResponse)
+  const response = await callAI(system, user, validateProfilerResponse, 'mistral')
   return parseProfilerResponse(response.content, schema)
 }

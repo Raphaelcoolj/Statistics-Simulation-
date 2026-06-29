@@ -1,9 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { runProfiler } from '@/lib/ai/profilerPrompt'
-import { toErrorResponse } from '@/lib/utils/errors'
 import { validateSchema } from '@/lib/utils/validation'
 import { rateLimit, getRateLimitIdentifier } from '@/lib/utils/rateLimit'
-import type { ProfileRequestBody, ProfilerOutput } from '@/lib/types'
+import type { ProfileRequestBody, ProfilerOutput, Column } from '@/lib/types'
 
 /**
  * POST /api/profile
@@ -27,7 +26,7 @@ export async function POST(request: NextRequest) {
 
     // Cache the column names safely here while the body is active
     if (body?.schema?.columns) {
-      backupColumns = body.schema.columns.map((c: any) => c.name)
+      backupColumns = body.schema.columns.map((c: Column) => c.name)
     }
 
     const schemaError = validateSchema(body.schema)

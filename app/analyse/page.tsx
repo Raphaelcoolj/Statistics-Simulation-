@@ -68,7 +68,8 @@ export default function AnalysePage() {
   const relSuggestions: RelationshipSuggestion[] = relationshipSuggestions ?? []
   const primaryPredictive = result.predictive
   const isPrimary = activeRelIndex === 0 || !relSuggestions[activeRelIndex]
-  const predictive = isPrimary ? primaryPredictive : (extraModels[activeRelIndex] ?? primaryPredictive)
+  // undefined = not loaded yet (preview primary), null = failed, PredictiveResult = loaded
+  const predictive = isPrimary ? primaryPredictive : (extraModels[activeRelIndex] === undefined ? primaryPredictive : extraModels[activeRelIndex])
   const predReg = predictive?.regressionResult
   const featureImportance = predReg?.featureImportance
   const alignmentHasPredictive = !!(predictive?.modelType || predReg)
@@ -436,6 +437,10 @@ function ChartCard({ suggestion, activeSession, index }: { suggestion: ChartSugg
   const fallbackCol = descriptive.length > 0 ? descriptive[0].column : undefined
   const targetColumnName = suggestion.column || suggestion.x || fallbackCol
   const targetMetrics = descriptive.find(d => d.column === targetColumnName)
+  const targetColumnMeta = useMemo(
+    () => activeSession.schema.columns.find(c => c.name === targetColumnName),
+    [activeSession.schema.columns, targetColumnName]
+  )
 
   const chartType = (suggestion.chartType === 'confusion_matrix' || suggestion.chartType === 'roc_curve')
     ? 'bar'
@@ -446,7 +451,7 @@ function ChartCard({ suggestion, activeSession, index }: { suggestion: ChartSugg
   const processedData: Record<string, unknown>[] = useMemo(() => {
     if ((chartType === 'bar' || chartType === 'pie' || chartType === 'line') && targetMetrics?.frequencyTable) {
       return Object.entries(targetMetrics.frequencyTable).map(([key, count]) => ({
-        name: key,
+        name: targetColumnMeta?.type === 'binary' ? mapBinaryLabel(key) : key,
         value: Number(count),
         mean: targetMetrics.mean ?? 0,
       }))
@@ -482,12 +487,12 @@ function ChartCard({ suggestion, activeSession, index }: { suggestion: ChartSugg
       }]
     }
 
-    // Fallback: scatter from sample rows using a numeric column
+    // Fallback: bar chart showing numeric column values by row index
     const rows = activeSession.schema.sampleRows ?? []
     const numCol = firstContinuousCol || fallbackCol
     if (rows.length > 0 && numCol) {
       return rows.slice(0, 100).map((row, idx) => ({
-        name: `Row ${idx + 1}`,
+        name: `#${idx + 1}`,
         x: idx,
         y: row[numCol] != null ? Number(row[numCol]) : 0,
         value: row[numCol] != null ? Number(row[numCol]) : 0,
@@ -495,7 +500,7 @@ function ChartCard({ suggestion, activeSession, index }: { suggestion: ChartSugg
     }
 
     return [{ name: title || 'No data', value: 0 }]
-  }, [chartType, targetMetrics, x, y, targetColumnName, activeSession.schema.sampleRows, correlations, descriptive, firstContinuousCol, fallbackCol, title])
+  }, [chartType, targetMetrics, x, y, targetColumnName, targetColumnMeta?.type, activeSession.schema.sampleRows, correlations, descriptive, firstContinuousCol, fallbackCol, title])
 
   const heatmapData = useMemo(() => {
     if (chartType !== 'heatmap' || correlations.length === 0) return null
@@ -658,6 +663,12 @@ function fmt(v: number | null | undefined) {
   return Math.abs(v) >= 1000
     ? v.toLocaleString(undefined, { maximumFractionDigits: 1 })
     : v.toFixed(3)
+}
+
+function mapBinaryLabel(key: string): string {
+  if (key === '1' || key.toLowerCase() === 'true' || key.toLowerCase() === 'yes') return 'Yes'
+  if (key === '0' || key.toLowerCase() === 'false' || key.toLowerCase() === 'no') return 'No'
+  return key
 }
 
 function SkewnessChip({ value }: { value?: number | null }) {
@@ -863,6 +874,8 @@ function RelationshipPanel({
   schema: DatasetSchema
   runPredictiveModel: (file: File, schema: DatasetSchema, dependent: string, predictors: string[], modelType?: string) => Promise<PredictiveResult | null>
 }) {
+  const isPrimary = activeRelIndex === 0 || !relSuggestions[activeRelIndex]
+  const modelFailed = !isPrimary && extraModels[activeRelIndex] === null
   const activeRel = relSuggestions[activeRelIndex]
 
   const r2 = predReg?.rSquared
@@ -981,6 +994,7 @@ const examplePrediction = useMemo(() => {
                   if (i > 0 && extraModels[i] === undefined) {
                     runPredictiveModel(file!, schema, rel.dependent, rel.predictors, rel.modelType)
                       .then(result => setExtraModels(prev => ({ ...prev, [i]: result })))
+                      .catch(() => setExtraModels(prev => ({ ...prev, [i]: null })))
                   }
                 }}
                 className={`px-3 py-1.5 text-xs font-mono rounded-lg border transition-all ${
@@ -994,6 +1008,17 @@ const examplePrediction = useMemo(() => {
               </button>
             )
           })}
+        </div>
+      )}
+
+      {/* Model failed state */}
+      {modelFailed && activeRel && (
+        <div className="rounded-xl border border-red-900/50 bg-red-950/20 p-5">
+          <p className="text-sm text-red-400 font-medium mb-1">Model failed to compute</p>
+          <p className="text-xs text-zinc-500">
+            Could not train a model for {activeRel.dependent} using {activeRel.predictors.join(', ')}.
+            This can happen with insufficient data, singular matrices, or non-convergence.
+          </p>
         </div>
       )}
 

@@ -433,14 +433,10 @@ function ChartCard({ suggestion, activeSession, index }: { suggestion: ChartSugg
     [activeSession.result.inferential?.correlations]
   )
 
-  const firstContinuousCol = descriptive.find(d => d.mean != null)?.column
   const fallbackCol = descriptive.length > 0 ? descriptive[0].column : undefined
   const targetColumnName = suggestion.column || suggestion.x || fallbackCol
   const targetMetrics = descriptive.find(d => d.column === targetColumnName)
-  const targetColumnMeta = useMemo(
-    () => activeSession.schema.columns.find(c => c.name === targetColumnName),
-    [activeSession.schema.columns, targetColumnName]
-  )
+
 
   const chartType = (suggestion.chartType === 'confusion_matrix' || suggestion.chartType === 'roc_curve')
     ? 'bar'
@@ -451,7 +447,7 @@ function ChartCard({ suggestion, activeSession, index }: { suggestion: ChartSugg
   const processedData: Record<string, unknown>[] = useMemo(() => {
     if ((chartType === 'bar' || chartType === 'pie' || chartType === 'line') && targetMetrics?.frequencyTable) {
       return Object.entries(targetMetrics.frequencyTable).map(([key, count]) => ({
-        name: targetColumnMeta?.type === 'binary' ? mapBinaryLabel(key) : key,
+        name: key,
         value: Number(count),
         mean: targetMetrics.mean ?? 0,
       }))
@@ -487,20 +483,8 @@ function ChartCard({ suggestion, activeSession, index }: { suggestion: ChartSugg
       }]
     }
 
-    // Fallback: bar chart showing numeric column values by row index
-    const rows = activeSession.schema.sampleRows ?? []
-    const numCol = firstContinuousCol || fallbackCol
-    if (rows.length > 0 && numCol) {
-      return rows.slice(0, 100).map((row, idx) => ({
-        name: `#${idx + 1}`,
-        x: idx,
-        y: row[numCol] != null ? Number(row[numCol]) : 0,
-        value: row[numCol] != null ? Number(row[numCol]) : 0,
-      }))
-    }
-
-    return [{ name: title || 'No data', value: 0 }]
-  }, [chartType, targetMetrics, x, y, targetColumnName, targetColumnMeta?.type, activeSession.schema.sampleRows, correlations, descriptive, firstContinuousCol, fallbackCol, title])
+    return [{ name: 'No data', value: 0 }]
+  }, [chartType, targetMetrics, x, y, targetColumnName, correlations, descriptive, activeSession.schema.sampleRows])
 
   const heatmapData = useMemo(() => {
     if (chartType !== 'heatmap' || correlations.length === 0) return null
@@ -597,6 +581,8 @@ function ChartCard({ suggestion, activeSession, index }: { suggestion: ChartSugg
     )
   }
 
+  const hasNoData = processedData.length === 1 && processedData[0]?.name === 'No data'
+
   return (
     <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 overflow-hidden">
       <div className="px-5 py-4 border-b border-zinc-800">
@@ -604,6 +590,11 @@ function ChartCard({ suggestion, activeSession, index }: { suggestion: ChartSugg
         {suggestion.reason && <p className="text-xs text-zinc-500 mt-0.5">{suggestion.reason}</p>}
       </div>
       <div className="p-4 h-56">
+        {hasNoData ? (
+          <div className="h-full flex items-center justify-center">
+            <p className="text-xs text-zinc-500">Chart not available — insufficient data</p>
+          </div>
+        ) : (
         <ResponsiveContainer width="100%" height="100%" debounce={150}>
           {chartType === 'scatter' ? (
             <ScatterChart>
@@ -649,6 +640,7 @@ function ChartCard({ suggestion, activeSession, index }: { suggestion: ChartSugg
             </BarChart>
           )}
         </ResponsiveContainer>
+        )}
       </div>
     </div>
   )
@@ -663,12 +655,6 @@ function fmt(v: number | null | undefined) {
   return Math.abs(v) >= 1000
     ? v.toLocaleString(undefined, { maximumFractionDigits: 1 })
     : v.toFixed(3)
-}
-
-function mapBinaryLabel(key: string): string {
-  if (key === '1' || key.toLowerCase() === 'true' || key.toLowerCase() === 'yes') return 'Yes'
-  if (key === '0' || key.toLowerCase() === 'false' || key.toLowerCase() === 'no') return 'No'
-  return key
 }
 
 function SkewnessChip({ value }: { value?: number | null }) {

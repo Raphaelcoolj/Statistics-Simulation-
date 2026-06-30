@@ -226,9 +226,50 @@ export function runMultipleRegression(
   }
 
   if (singular) {
-    result.modelType = 'linear'
-    result.note = 'Fell back to linear regression due to multicollinearity in predictors'
-    return runLinearRegression(data, dependent, predictors[0])
+    // Ridge regression fallback: add small L2 penalty to diagonal to guarantee invertibility
+    const lambda = predictors.length > 5 ? 1.0 : 1e-3
+    const ridgeNote = `Ridge regression (λ=${lambda}) used due to multicollinearity`
+    if (predictors.length === 1 && (nEq < 3 || XtX[0][0] === 0)) {
+      result.note = ridgeNote
+      return runLinearRegression(data, dependent, predictors[0])
+    }
+    for (let i = 0; i < nEq; i++) XtX[i][i] += lambda
+    const aug2 = XtX.map((row, i) => [...row, XtY[i]])
+    let ridgeFail = false
+    for (let col = 0; col < nEq; col++) {
+      let maxRow = col
+      for (let row = col + 1; row < nEq; row++) {
+        if (Math.abs(aug2[row][col]) > Math.abs(aug2[maxRow][col])) maxRow = row
+      }
+      [aug2[col], aug2[maxRow]] = [aug2[maxRow], aug2[col]]
+      const pivot = aug2[col][col]
+      if (Math.abs(pivot) < 1e-12) { ridgeFail = true; break }
+      for (let row = col; row <= nEq; row++) aug2[col][row] /= pivot
+      for (let row = 0; row < nEq; row++) {
+        if (row !== col) {
+          const factor = aug2[row][col]
+          for (let j = col; j <= nEq; j++) aug2[row][j] -= factor * aug2[col][j]
+        }
+      }
+    }
+    if (ridgeFail) {
+      result.note = `${ridgeNote}; ridge also failed`
+      return runLinearRegression(data, dependent, predictors[0])
+    }
+    const beta2 = aug2.map(row => row[nEq])
+    result.intercept = beta2[0]
+    result.coefficients = beta2.slice(1)
+    result.predictions = X.map(row => row.reduce((sum, xv, j) => sum + xv * beta2[j], 0))
+    const ridgeYMean = ss.mean(yTrimmed)
+    const ridgeSsRes = yTrimmed.reduce((sum, yi, i) => sum + (yi - result.predictions[i]) ** 2, 0)
+    const ridgeSsTot = yTrimmed.reduce((sum, yi) => sum + (yi - ridgeYMean) ** 2, 0)
+    result.rSquared = ridgeSsTot > 0 ? 1 - ridgeSsRes / ridgeSsTot : 0
+    result.adjustedRSquared = 1 - (1 - result.rSquared) * (n - 1) / (n - predictors.length - 1)
+    result.residuals = yTrimmed.map((yi, i) => yi - result.predictions[i])
+    result.mse = result.residuals.reduce((s, r) => s + r * r, 0) / result.residuals.length
+    result.rmse = Math.sqrt(result.mse)
+    result.note = ridgeNote
+    return result
   }
 
   const beta = aug.map(row => row[nEq])
@@ -303,7 +344,7 @@ export function runLogisticRegression(
   }
 
   try {
-    const logreg = new LogisticRegression({ numSteps: 1000, learningRate: 0.1 })
+    const logreg = new LogisticRegression({ numSteps: 5000, learningRate: 0.05, lambda: 0.01 })
     logreg.train(filteredData, y)
     const preds = logreg.predict(filteredData) as number[]
     result.predictions = preds
@@ -317,9 +358,25 @@ export function runLogisticRegression(
     const correct = preds.reduce((sum, p, i) => sum + (p === y[i] ? 1 : 0), 0)
     result.accuracy = correct / preds.length
     result.rSquared = undefined
-    result.note = 'R² not applicable for logistic regression. Use accuracy instead.'
+    result.note = `R² not applicable. Accuracy: ${(result.accuracy * 100).toFixed(1)}%`
   } catch {
-    result.note = 'Logistic regression failed to converge'
+    try {
+      const logreg = new LogisticRegression({ numSteps: 10000, learningRate: 0.01, lambda: 0.1 })
+      logreg.train(filteredData, y)
+      const preds = logreg.predict(filteredData) as number[]
+      result.predictions = preds
+      const weights = (logreg as unknown as { weights: number[] }).weights
+      if (weights && weights.length > 0) {
+        result.intercept = weights[0] || 0
+        result.coefficients = weights.slice(1)
+      }
+      const correct = preds.reduce((sum, p, i) => sum + (p === y[i] ? 1 : 0), 0)
+      result.accuracy = correct / preds.length
+      result.rSquared = undefined
+      result.note = `Slow convergence. Accuracy: ${(result.accuracy * 100).toFixed(1)}%`
+    } catch {
+      result.note = 'Logistic regression failed to converge. Try fewer predictors or check for perfect separation.'
+    }
   }
 
   return result
@@ -582,8 +639,9 @@ export function runPredictive(
 
   // Train/test split (skip for timeseries which needs temporal order)
   const useTrainTest = modelType !== 'timeseries' && preprocessed.data.length >= 30
-  const trainData = useTrainTest ? trainTestSplit(preprocessed.data).train : preprocessed.data
-  const testData = useTrainTest ? trainTestSplit(preprocessed.data).test : []
+  const split = useTrainTest ? trainTestSplit(preprocessed.data) : null
+  const trainData = split ? split.train : preprocessed.data
+  const testData = split ? split.test : []
 
   let regressionResult: RegressionResult
   switch (modelType) {

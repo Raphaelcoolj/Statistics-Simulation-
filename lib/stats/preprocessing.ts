@@ -118,10 +118,11 @@ export function preprocessForModel(
   const colMap = new Map(allColumns.map(c => [c.name, c]))
   const predCols = predictors.map(p => colMap.get(p)).filter(Boolean) as Column[]
 
-  let cleanData = data.filter(row => !isMissing(row[dependent]))
-  const droppedRows = data.length - cleanData.length
-
-  cleanData = applyMissingValueImputation(cleanData, predCols)
+  // Impute predictors using ALL rows (better stats), then drop dependent-missing rows
+  let cleanData = applyMissingValueImputation(data, predCols)
+  const preDropCount = cleanData.length
+  cleanData = cleanData.filter(row => !isMissing(row[dependent]))
+  const droppedRows = preDropCount - cleanData.length
 
   const { data: encodedData, addedColumns } = oneHotEncode(cleanData, predCols)
 

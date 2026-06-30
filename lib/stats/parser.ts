@@ -30,7 +30,7 @@ export async function parseCSV(buffer: Buffer, fileName: string): Promise<Parsed
     return row
   })
 
-  const sampleRows = data.slice(0, 10) as Record<string, unknown>[]
+  const sampleRows = data.slice(0, 100) as Record<string, unknown>[]
 
   const schema: DatasetSchema = {
     fileName,

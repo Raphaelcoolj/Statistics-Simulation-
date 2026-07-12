@@ -32,8 +32,12 @@ export async function POST(request: NextRequest) {
       return Response.json({ success: false, error: 'Invalid analyses format' }, { status: 400 })
     }
 
+    // Read file bytes into a Blob so it serializes reliably over fetch
+    const fileBytes = await (file as File).arrayBuffer()
+    const fileBlob = new Blob([fileBytes], { type: 'text/csv' })
+
     const proxyForm = new FormData()
-    proxyForm.append('file', file as File)
+    proxyForm.append('file', fileBlob, (file as File).name)
     proxyForm.append('analyses', analysesRaw)
 
     const strategiesRaw = formData.get('strategies')
@@ -63,12 +67,19 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(data)
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Unknown error'
+    // connection refused — Python backend not running
+    if (msg.includes('fetch failed') || msg.includes('ECONNREFUSED') || msg.includes('connect')) {
+      return Response.json(
+        { success: false, error: 'Python backend is not running. Start it with: npm run dev:backend' },
+        { status: 502 },
+      )
+    }
     if (msg.includes('aborted')) {
       return Response.json(
         { success: false, error: 'Analysis timed out. Try a smaller dataset.' },
         { status: 504 },
       )
     }
-    return Response.json(toErrorResponse(err), { status: 502 })
+    return Response.json(toErrorResponse(err), { status: 500 })
   }
 }

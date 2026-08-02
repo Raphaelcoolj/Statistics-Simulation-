@@ -12,6 +12,7 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import json
 import io
+import os
 
 from .models import (
     AnalysisRequest, AnalyseResponse, AnalysisResult,
@@ -38,7 +39,10 @@ app = FastAPI(title="StatLab Analysis API", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=[
+        "http://localhost:3000",
+        os.environ.get("FRONTEND_URL", ""),
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

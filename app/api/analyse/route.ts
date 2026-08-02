@@ -61,14 +61,22 @@ export async function POST(request: NextRequest) {
     clearTimeout(timeout)
 
     if (!res.ok) {
-      const errBody = await res.json().catch(() => ({}))
+      const errText = await res.text().catch(() => '')
+      let errDetail = `Python backend error (${res.status})`
+      try {
+        const errJSON = JSON.parse(errText)
+        errDetail = errJSON.detail ?? errDetail
+      } catch {
+        errDetail = errText.slice(0, 200) || errDetail
+      }
       return Response.json(
-        { success: false, error: errBody.detail ?? `Python backend error (${res.status})` },
+        { success: false, error: errDetail },
         { status: res.status },
       )
     }
 
-    const data = await res.json()
+    const text = await res.text()
+    const data = JSON.parse(text)
     return NextResponse.json(data)
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Unknown error'

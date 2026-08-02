@@ -168,17 +168,6 @@ class MissingValueReport(BaseModel):
     warnings: Optional[list[str]] = None
 
 
-class AnalyseResponse(BaseModel):
-    success: bool
-    result: Optional[AnalysisResult] = None
-    missingValueReport: Optional[MissingValueReport] = None
-    schema_: Optional[DatasetSchema] = Field(default=None, alias="schema")
-    cleaningReport: Optional[CleaningReport] = None
-    featureEngineeringReport: Optional[FeatureEngineeringReport] = None
-    modelTrainingReport: Optional[ModelTrainingReport] = None
-    error: Optional[str] = None
-
-
 class PreprocessingConfig(BaseModel):
     """Optional preprocessing steps applied before analysis."""
     # Missing data
@@ -317,4 +306,15 @@ class ModelTrainingReport(BaseModel):
     featureInsights: Optional[dict] = None
     recommendations: Optional[list] = None
     charts: Optional[dict] = None
+    error: Optional[str] = None
+
+
+class AnalyseResponse(BaseModel):
+    success: bool
+    result: Optional[AnalysisResult] = None
+    missingValueReport: Optional[MissingValueReport] = None
+    schema_: Optional[DatasetSchema] = Field(default=None, alias="schema")
+    cleaningReport: Optional[CleaningReport] = None
+    featureEngineeringReport: Optional[FeatureEngineeringReport] = None
+    modelTrainingReport: Optional[ModelTrainingReport] = None
     error: Optional[str] = None

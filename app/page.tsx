@@ -3,12 +3,13 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import Papa from 'papaparse'
+import * as XLSX from 'xlsx'
 import { useStatLab } from '@/components/StatLabProvider'
 import type { DatasetSchema, AnalysisRequest, Column } from '@/lib/types'
 
 const PIPELINE_LABELS = {
   idle: '',
-  parsing: 'Parsing CSV…',
+  parsing: 'Parsing file…',
   profiling: 'AI is profiling your dataset…',
   analysing: 'Running statistical computations…',
   interpreting: 'Generating AI interpretation…',
@@ -33,20 +34,31 @@ export default function HomePage() {
 
   const parseFile = useCallback((f: File) => {
     setFile(f)
-    Papa.parse(f, {
-      header: true,
-      skipEmptyLines: true,
-      complete(results) {
-        const fields = results.meta.fields ?? []
-        const sampleRows = results.data as Record<string, string>[]
+    const ext = f.name.split('.').pop()?.toLowerCase() ?? ''
 
-          const columns: Column[] = fields.map(name => {
+    if (ext === 'xlsx' || ext === 'xls') {
+      // Excel file — use xlsx library
+      const reader = new FileReader()
+      reader.onload = (e) => {
+        const data = new Uint8Array(e.target?.result as ArrayBuffer)
+        const workbook = XLSX.read(data, { type: 'array' })
+        const sheetName = workbook.SheetNames[0]
+        const sheet = workbook.Sheets[sheetName]
+        const jsonData = XLSX.utils.sheet_to_json<Record<string, string>>(sheet, { defval: '' })
+
+        if (jsonData.length === 0) return
+
+        const fields = Object.keys(jsonData[0])
+        const sampleRows = jsonData
+
+        const columns: Column[] = fields.map(name => {
           const values = sampleRows.map(r => r[name]).filter(Boolean)
           const numeric = values.every(v => !isNaN(Number(v)))
+          const unique = [...new Set(values)]
           return {
             name,
             type: numeric ? ('continuous' as const) : ('categorical' as const),
-            uniqueValues: [...new Set(values)],
+            uniqueValues: unique.length <= 50 ? unique : unique.slice(0, 20),
             sampleValues: values.slice(0, 5),
             nullCount: sampleRows.filter(r => !r[name]).length,
           }
@@ -60,15 +72,48 @@ export default function HomePage() {
           sampleRows: sampleRows.slice(0, 200),
         }
         setSchema(s)
-      },
-    })
+      }
+      reader.readAsArrayBuffer(f)
+    } else {
+      // CSV — use PapaParse
+      Papa.parse(f, {
+        header: true,
+        skipEmptyLines: true,
+        complete(results) {
+          const fields = results.meta.fields ?? []
+          const sampleRows = results.data as Record<string, string>[]
+
+          const columns: Column[] = fields.map(name => {
+            const values = sampleRows.map(r => r[name]).filter(Boolean)
+            const numeric = values.every(v => !isNaN(Number(v)))
+            const unique = [...new Set(values)]
+            return {
+              name,
+              type: numeric ? ('continuous' as const) : ('categorical' as const),
+              uniqueValues: unique.length <= 50 ? unique : unique.slice(0, 20),
+              sampleValues: values.slice(0, 5),
+              nullCount: sampleRows.filter(r => !r[name]).length,
+            }
+          })
+
+          const s = {
+            fileName: f.name,
+            rowCount: sampleRows.length,
+            columnCount: fields.length,
+            columns,
+            sampleRows: sampleRows.slice(0, 200),
+          }
+          setSchema(s)
+        },
+      })
+    }
   }, [setFile, setSchema])
 
   const onDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault()
     setDragging(false)
     const f = e.dataTransfer.files[0]
-    if (f && f.name.endsWith('.csv')) parseFile(f)
+    if (f) parseFile(f)
   }, [parseFile])
 
   const handleSubmit = useCallback(async () => {
@@ -117,7 +162,7 @@ export default function HomePage() {
             <span className="text-emerald-400 font-semibold">Get instant insights.</span>
           </h1>
           <p className="text-zinc-400 text-sm max-w-lg leading-relaxed">
-            Drop a CSV file, choose your analysis mode, and StatLabs will compute
+            Drop a CSV or Excel file, choose your analysis mode, and StatLabs will compute
             descriptive stats, correlations, regressions, and AI interpretations — all in your browser.
           </p>
         </div>
@@ -134,7 +179,7 @@ export default function HomePage() {
           <input
             ref={inputRef}
             type="file"
-            accept=".csv"
+            accept=".csv,.xlsx,.xls"
             className="hidden"
             onChange={e => {
               const f = e.target.files?.[0]
@@ -153,7 +198,7 @@ export default function HomePage() {
             </div>
           ) : (
             <div className="space-y-0.5">
-              <p className="text-sm font-medium text-zinc-200">Drop your CSV here</p>
+              <p className="text-sm font-medium text-zinc-200">Drop your CSV or Excel file here</p>
               <p className="text-xs text-zinc-500">or click to browse files</p>
             </div>
           )}
@@ -271,6 +316,10 @@ function ManualConfig({
   const [dependent, setDependent] = useState('')
   const [predictors, setPredictors] = useState<string[]>([])
   const [toast, setToast] = useState<string | null>(null)
+  const [mtEnabled, setMtEnabled] = useState(false)
+  const [mtMethod, setMtMethod] = useState('random')
+  const [mtIterations, setMtIterations] = useState(15)
+  const [mtFolds, setMtFolds] = useState(5)
 
   const showToast = (msg: string) => {
     setToast(msg)
@@ -303,8 +352,14 @@ function ManualConfig({
         dependent,
         predictors,
       } : undefined,
+      modelTraining: mtEnabled ? {
+        enabled: true,
+        tuningMethod: mtMethod,
+        tuningIterations: mtIterations,
+        cvFolds: mtFolds,
+      } : undefined,
     })
-  }, [descriptiveCols, corrPairs, dependent, predictors, onChange])
+  }, [descriptiveCols, corrPairs, dependent, predictors, onChange, mtEnabled, mtMethod, mtIterations, mtFolds])
 
   const addPair = () => {
     if (corrA && corrB && corrA !== corrB) {
@@ -406,6 +461,54 @@ function ManualConfig({
           </div>
         )}
       </div>
+
+      {/* Model Training Toggle */}
+      {dependent && predictors.length > 0 && (
+        <div className="space-y-3 pt-3 border-t border-zinc-800">
+          <div className="flex items-center justify-between">
+            <div>
+              <label className="text-[10px] text-zinc-500 font-bold uppercase tracking-wider">ML Model Training</label>
+              <p className="text-[11px] text-zinc-500 mt-0.5">Train, tune &amp; compare multiple algorithms</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setMtEnabled(p => !p)}
+              className={`relative w-10 h-5 rounded-full transition-colors ${
+                mtEnabled ? 'bg-emerald-600' : 'bg-zinc-700'
+              }`}
+            >
+              <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${
+                mtEnabled ? 'translate-x-5' : 'translate-x-0.5'
+              }`} />
+            </button>
+          </div>
+
+          {mtEnabled && (
+            <div className="grid grid-cols-3 gap-3 pl-1">
+              <div className="space-y-1">
+                <label className="text-[10px] text-zinc-500 font-bold uppercase tracking-wider">Tuning</label>
+                <select value={mtMethod} onChange={e => setMtMethod(e.target.value)} className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs text-zinc-300 focus:outline-none focus:border-zinc-700">
+                  <option value="none">None</option>
+                  <option value="random">Random Search</option>
+                  <option value="grid">Grid Search</option>
+                </select>
+              </div>
+              <div className="space-y-1">
+                <label className="text-[10px] text-zinc-500 font-bold uppercase tracking-wider">Iterations</label>
+                <input type="number" value={mtIterations} min={1} max={50}
+                  onChange={e => setMtIterations(Number(e.target.value) || 15)}
+                  className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs text-zinc-300 focus:outline-none focus:border-zinc-700" />
+              </div>
+              <div className="space-y-1">
+                <label className="text-[10px] text-zinc-500 font-bold uppercase tracking-wider">CV Folds</label>
+                <input type="number" value={mtFolds} min={2} max={10}
+                  onChange={e => setMtFolds(Number(e.target.value) || 5)}
+                  className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs text-zinc-300 focus:outline-none focus:border-zinc-700" />
+              </div>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }

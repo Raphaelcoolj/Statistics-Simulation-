@@ -1,6 +1,10 @@
 export interface Column {
   name: string
   type: "continuous" | "categorical" | "ordinal" | "datetime" | "binary"
+  coded?: boolean
+  codeNote?: string
+  codeUncertain?: boolean
+  labels?: Record<string, string>
   uniqueValues?: string[] | number[]
   min?: number
   max?: number
@@ -16,6 +20,8 @@ export interface DatasetSchema {
   columnCount: number
   columns: Column[]
   sampleRows: Record<string, unknown>[]
+  fullData?: Record<string, unknown>[]
+  duplicateRowCount?: number
 }
 
 export type Row = Record<string, string | number | null>
@@ -41,6 +47,16 @@ export interface AnalysisRequest {
     dependent: string
     predictors: string[]
     modelType?: ModelType
+  }
+  modelTraining?: {
+    enabled?: boolean
+    problemType?: string
+    models?: string[]
+    tuningMethod?: string
+    tuningIterations?: number
+    cvFolds?: number
+    testSize?: number
+    valSize?: number
   }
 }
 
@@ -182,7 +198,32 @@ export interface AnalyseRequestBody {
 export interface AnalyseResponseBody {
   success: boolean
   result?: AnalysisResult
+  modelTrainingReport?: ModelTrainingReport
   error?: string
+}
+
+export interface ModelTrainingReport {
+  problemType?: string
+  split?: { train: number; val: number; test: number; testSize: number; valSize: number }
+  baselines?: Record<string, unknown>
+  models?: Record<string, unknown>
+  bestModel?: { model: string; score: number }
+  explainability?: {
+    methods?: Record<string, unknown>
+    consensusRanking?: { feature: string; averageRank: number; consensusRank: number }[]
+    summary?: string
+  }
+  businessTranslation?: {
+    insights?: { type: string; text: string }[]
+    confidence?: string
+    summary?: string
+  }
+  featureInsights?: {
+    topFeatures?: { feature: string; percentage: number; level: string; description: string }[]
+    summary?: string
+  }
+  recommendations?: { category: string; priority: string; action: string; rationale: string }[]
+  charts?: Record<string, unknown>
 }
 
 export interface ProfileRequestBody {
@@ -198,6 +239,7 @@ export interface ProfileResponseBody {
 export interface InterpretRequestBody {
   schema: DatasetSchema
   result: AnalysisResult
+  modelTrainingReport?: ModelTrainingReport
 }
 
 export interface InterpretResponseBody {

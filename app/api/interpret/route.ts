@@ -4,41 +4,104 @@ import type { InterpretRequestBody } from '@/lib/types'
 import { GoogleGenerativeAI } from '@google/generative-ai'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function buildPrompt(schema: any, result: any): string {
-  // Prune down results safely so we never hit a 413 Payload Too Large error
-  const optimizedResult = {
-    summaryMetrics: result.summary || result.metrics || {},
-    regressionResult: result.regressionResult ? {
-      r2: result.regressionResult.r2,
-      featureImportance: result.regressionResult.featureImportance 
-    } : undefined,
-    // Slice arrays down to a tiny sample size instead of dumping hundreds of rows
-    previewData: Array.isArray(result) ? result.slice(0, 3) : undefined
-  };
+function buildPrompt(schema: any, result: any, modelTrainingReport?: any): string {
+  // Build model training context (explainability + business translation)
+  let modelTrainingContext = '';
+  if (modelTrainingReport) {
+    const mt = modelTrainingReport;
+    const parts: string[] = [];
 
-  return `
-    You are a professional automated data scientist for StatLab.
-    Analyze the following dataset context and mathematical results, then provide plain-English structural interpretations.
-    
-    DATASET SCHEMA:
-    ${JSON.stringify(schema)}
-    
-    COMPUTED ANALYSIS RESULTS (SAMPLE):
-    ${JSON.stringify(optimizedResult)}
-    
-    RESPONSE FORMAT REQUIREMENT:
-    You must respond ONLY with a raw valid JSON object matching this structural shape. Do not wrap it in markdown code blocks:
-    {
-      "summary": "A concise paragraph summarizing the key takeaway of the entire data run.",
-      "perAnalysis": [
-        {
-          "type": "The category or metric analyzed (e.g., Regression, Distribution)",
-          "subject": "The specific column or pair targeted (e.g., Age vs Spending_Score)",
-          "interpretation": "A 1-2 sentence deep context insight regarding what this specific mathematical change means."
-        }
-      ]
+    if (mt.explainability?.consensusRanking?.length) {
+      const topFeatures = mt.explainability.consensusRanking.slice(0, 5)
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .map((f: any) => `${f.feature} (rank ${f.consensusRank})`).join(', ');
+      parts.push(`TOP FEATURES (consensus): ${topFeatures}`);
     }
-  `;
+    if (mt.explainability?.summary) {
+      parts.push(`EXPLAINABILITY: ${mt.explainability.summary}`);
+    }
+    if (mt.businessTranslation?.insights?.length) {
+      const insights = mt.businessTranslation.insights.slice(0, 4)
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .map((i: any) => i.text).join(' ');
+      parts.push(`BUSINESS TRANSLATION: ${insights}`);
+    }
+    if (mt.businessTranslation?.confidence) {
+      parts.push(`MODEL CONFIDENCE: ${mt.businessTranslation.confidence}`);
+    }
+    if (mt.recommendations?.length) {
+      const recs = mt.recommendations.slice(0, 3)
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .map((r: any) => `[${r.priority}] ${r.action}`).join(' ');
+      parts.push(`RECOMMENDATIONS: ${recs}`);
+    }
+    if (mt.bestModel) {
+      parts.push(`BEST MODEL: ${mt.bestModel.model} (score: ${mt.bestModel.score})`);
+    }
+
+    if (parts.length > 0) {
+      modelTrainingContext = `\n\nMODEL TRAINING & EXPLAINABILITY:\n${parts.join('\n')}`;
+    }
+  }
+
+  return `You are StatLab AI, a senior Data Scientist with 15+ years of experience in statistics, machine learning, experimentation, and business analytics.
+
+Your role is not to simply describe charts or output numbers. Your responsibility is to think like an experienced data scientist consulting for a client.
+
+Personality:
+- Professional, precise, evidence-based, business-oriented
+- Honest about uncertainty — never exaggerate findings
+- Never fabricate statistics — every conclusion must come directly from the dataset and computed metrics
+
+Writing Style:
+- Write like a consultant delivering a report to executives
+- Avoid robotic statements and repeating statistics unnecessarily
+- Explain technical terms in plain English when appropriate
+- Prioritize interpretation over numbers
+- Highlight anomalies worth investigating
+
+Rules:
+- Never recompute or change the numbers given to you
+- Use exact numeric values provided in the data
+- Never infer causation from correlation — always flag this distinction
+- Explain what results mean practically, not just statistically
+- When feature importance or explainability data is provided, translate it into business actions
+- When business translation is provided, reference it in your interpretation
+- Flag statistical significance clearly
+- Always include limitations when relevant
+- Return ONLY valid JSON, no preamble, no markdown
+
+DATASET SCHEMA:
+${JSON.stringify(schema)}
+
+COMPUTED ANALYSIS RESULTS (SAMPLE):
+${JSON.stringify(result)}
+${modelTrainingContext}
+
+RESPONSE FORMAT:
+Return ONLY a raw valid JSON object (no markdown, no code fences):
+
+{
+  "summary": "Write a 4-6 sentence executive summary that covers: (1) what the dataset contains and its objective, (2) data quality notes (missing values, outliers, duplicates if notable), (3) the 2-3 most important findings with business impact, (4) model performance quality if applicable, (5) top recommendation, (6) confidence level (High/Medium/Low) with brief justification. Write like a consultant, not a robot.",
+
+  "perAnalysis": [
+    {
+      "type": "descriptive|correlation|hypothesis|predictive|feature_importance|business_impact|data_quality|recommendation",
+      "subject": "column name, pair, or topic (e.g., 'Age', 'Revenue vs Ad Spend', 'Model Performance', 'Data Quality')",
+      "interpretation": "Write 2-4 sentences as a senior data scientist would: explain the distribution/skewness for descriptive, explain what r=0.81 means practically for correlations (never just state the number), translate p-values into plain-English significance for hypothesis tests, explain model metrics in business terms for predictive, explain why each feature matters for feature importance. Always connect findings to business actions when possible. Never fabricate statistics. Always note limitations or caveats when relevant."
+    }
+  ]
+}
+
+Generate perAnalysis entries for:
+1. Each notable descriptive variable (focus on ones with interesting distributions, high skewness, or many outliers)
+2. Each significant correlation pair (explain practical meaning, note correlation ≠ causation)
+3. Each hypothesis test result (translate p-values to plain English)
+4. The predictive model overall (explain R²/accuracy in business terms)
+5. Top feature importances (group them, explain business impact)
+6. Key business insights and recommendations (actionable, data-backed)
+
+Prioritise quality over quantity — it is better to have 6-10 excellent interpretations than 20 shallow ones.`;
 }
 
 export async function POST(request: NextRequest) {
@@ -60,10 +123,10 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    const payloadPrompt = buildPrompt(body.schema, body.result);
+    const payloadPrompt = buildPrompt(body.schema, body.result, body.modelTrainingReport);
 
     // =======================================================
-    // 🚀 ENGINE 1: GROQ (PRIMARY ENGINE)
+    // ENGINE 1: GROQ (PRIMARY ENGINE)
     // =======================================================
     if (process.env.GROQ_API_KEY) {
       try {
@@ -75,8 +138,11 @@ export async function POST(request: NextRequest) {
             'Content-Type': 'application/json'
           },
           body: JSON.stringify({
-            model: 'llama-3.3-70b-versatile', // Updated model that perfectly handles JSON configurations
-            messages: [{ role: 'user', content: payloadPrompt }],
+            model: 'llama-3.3-70b-versatile',
+            messages: [
+              { role: 'system', content: 'You are StatLab AI, a senior Data Scientist. Return ONLY valid JSON, no markdown, no preamble.' },
+              { role: 'user', content: payloadPrompt }
+            ],
             temperature: 0.1
           })
         });
@@ -85,7 +151,6 @@ export async function POST(request: NextRequest) {
           const rawData = await groqResponse.json();
           let cleanText = rawData.choices[0].message.content.trim();
           
-          // Strip out markdown code blocks if Llama accidentally injects them
           if (cleanText.startsWith('```json')) cleanText = cleanText.replace(/^```json/, '').replace(/```$/, '');
           if (cleanText.startsWith('```')) cleanText = cleanText.replace(/^```/, '').replace(/```$/, '');
 
@@ -106,20 +171,18 @@ export async function POST(request: NextRequest) {
     }
 
     // =======================================================
-    // 🔄 ENGINE 2: GEMINI (SUB / FALLBACK ENGINE)
+    // ENGINE 2: GEMINI (SUB / FALLBACK ENGINE)
     // =======================================================
     if (process.env.GEMINI_API_KEY) {
   try {
     console.log('[StatLab AI] Routing request to Gemini (Fallback Sub)...');
     
     const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '');
-    // Using gemini-pro bypasses the 404 version constraints of your installed package
     const model = genAI.getGenerativeModel({ model: 'gemini-pro' });
 
     const result = await model.generateContent(payloadPrompt);
     let cleanText = result.response.text().trim();
 
-        // Strip out markdown formatting if present
         if (cleanText.startsWith('```json')) cleanText = cleanText.replace(/^```json/, '').replace(/```$/, '');
         if (cleanText.startsWith('```')) cleanText = cleanText.replace(/^```/, '').replace(/```$/, '');
 
@@ -143,7 +206,7 @@ export async function POST(request: NextRequest) {
     console.error('[StatLab AI] Global Fallback Triggered:', error);
     return NextResponse.json({
       success: true,
-      summary: 'Analysis complete. Review the system charts and generated data models for full insights.',
+      summary: 'Analysis complete. Review the charts and data tables for full insights.',
       perAnalysis: [],
       provider: null,
       fallbackUsed: true,

@@ -1,8 +1,9 @@
 export function validateCSVFile(file: File | null): string | null {
   if (!file) return 'No file provided'
-  if (!file.name.endsWith('.csv') && file.type !== 'text/csv') {
-    return 'File must be a CSV'
-  }
+  const name = (file.name || '').toLowerCase()
+  const isCsv = name.endsWith('.csv') || file.type === 'text/csv'
+  const isExcel = name.endsWith('.xlsx') || name.endsWith('.xls')
+  if (!isCsv && !isExcel) return 'File must be a CSV or Excel (.xlsx / .xls)'
   if (file.size === 0) return 'File is empty'
   if (file.size > 50 * 1024 * 1024) return 'File exceeds 50MB limit'
   return null

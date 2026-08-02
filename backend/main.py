@@ -48,6 +48,11 @@ app.add_middleware(
 )
 
 
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+
 def _generate_chart_suggestions(
     columns: list,
     analyses: dict,
@@ -248,6 +253,8 @@ async def analyse(
     desc_config = analyses_data.get("descriptive")
     if desc_config:
         desc_cols = desc_config.get("columns", [])
+        # Flatten if nested: [["a","b"]] -> ["a","b"]
+        desc_cols = [c for col in desc_cols for c in (col if isinstance(col, list) else [col])]
         desc_results = compute_descriptive(df, desc_cols)
         result.descriptive = desc_results
 

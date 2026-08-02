@@ -4,8 +4,6 @@ Generates chart-ready data structures for feature importance, partial
 dependence, model comparison, and business impact visualizations.
 """
 
-from typing import Optional
-
 
 def feature_importance_chart(explainability: dict, top_n: int = 10) -> dict:
     """Build a horizontal bar chart data structure for feature importance.

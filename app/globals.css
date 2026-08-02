@@ -26,34 +26,3 @@ body {
     text-wrap: balance;
   }
 }
-
-@media print {
-    /* 1. Force the browser to keep dark backgrounds and exact colors */
-    html, body {
-        background-color: #09090b !important;
-        color: #f4f4f5 !important;
-        -webkit-print-color-adjust: exact !important;
-        print-color-adjust: exact !important;
-    }
-
-    /* 2. Prevent page breaks from slicing cards in half awkwardly */
-    .card, .bento-item, [class*="bg-zinc"], canvas, svg {
-        page-break-inside: avoid !important;
-        break-inside: avoid !important;
-        background-color: #18181b !important; /* Keep card background gray */
-        border-radius: 0.75rem !important;
-    }
-
-    /* 3. Re-stabilize grids and flex containers for print engines */
-    .grid, .flex {
-        display: flex !important;
-        flex-direction: column !important;
-        gap: 1.5rem !important;
-    }
-
-    /* 4. Ensure charts scale cleanly without overlapping text */
-    img, canvas, svg {
-        max-width: 100% !important;
-        height: auto !important;
-    }
-}

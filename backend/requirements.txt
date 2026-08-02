@@ -12,6 +12,6 @@ xlrd==2.0.1
 xgboost>=2.1.0
 lightgbm>=4.5.0
 optuna>=4.0.0
-# Model explainability
-shap>=0.47.0
+# Model explainability (shap requires numba, incompatible with Python 3.14)
+# shap>=0.47.0
 lime>=0.2.0

@@ -55,10 +55,11 @@ def translate_regression_metrics(
                 err_desc = f"Prediction error averages {rmse:.2f} ({rmse_pct:.1f}% of average) — significant room for improvement."
             else:
                 err_desc = f"Prediction error is {rmse:.2f} ({rmse_pct:.1f}% of average) — model needs refinement."
+            result["impact"]["errorMagnitude"] = "low" if rmse_pct < 10 else "medium"
         else:
             err_desc = f"Root Mean Squared Error is {rmse:.2f}."
+            result["impact"]["errorMagnitude"] = "unknown"
         result["insights"].append({"type": "predictionError", "text": err_desc, "rmse": rmse})
-        result["impact"]["errorMagnitude"] = "low" if rmse_pct < 10 else "medium"
 
     if mae is not None and avg_target is not None and avg_target != 0:
         mae_pct = abs(mae / avg_target) * 100

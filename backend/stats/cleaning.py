@@ -501,6 +501,7 @@ def detect_fuzzy_duplicates(
     columns: list[str] | None = None,
     threshold: float = 0.9,
 ) -> dict:
+    from difflib import SequenceMatcher
     """Detect near-duplicate rows using fuzzy string matching.
 
     Compares string/categorical columns pairwise and flags rows where all
@@ -544,7 +545,6 @@ def detect_fuzzy_duplicates(
                 if vi == "" or vj == "":
                     continue  # Skip empty comparisons
                 # Simple similarity: ratio of matching chars
-                from difflib import SequenceMatcher
                 sim = SequenceMatcher(None, vi, vj).ratio()
                 if sim < threshold:
                     all_match = False

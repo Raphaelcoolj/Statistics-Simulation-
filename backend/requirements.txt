@@ -12,6 +12,7 @@ xlrd==2.0.1
 xgboost>=2.1.0
 lightgbm>=4.5.0
 optuna>=4.0.0
-# Model explainability
+# Model explainability (shap needs numba, pin to avoid old versions)
+numba>=0.60.0
 shap>=0.47.0
 lime>=0.2.0

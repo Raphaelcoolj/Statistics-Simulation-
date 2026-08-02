@@ -1,32 +1,43 @@
-# Agent References
+# AGENTS.md
 
-## How Example Scenarios Work
+StatLab: Next.js (14, app router) frontend + Next API routes. Statistical computation runs in a **separate FastAPI Python backend**, not in the route code.
 
-When predictions are generated, example scenarios show predicted values. The system uses a two-tier approach:
+## The most important gotcha: dual backends
 
-1. **Primary**: Uses actual data rows from `schema.sampleRows` (all rows passed through; example prediction filters for numeric validity)
-2. **Fallback**: If sample rows lack valid numeric values for all predictors, generates synthetic examples using column statistics (median/mean/min-max midpoint)
+- `POST /api/analyse` (`app/api/analyse/route.ts:51`) **proxies all statistics** to a FastAPI service at `PYTHON_BACKEND_URL` (default `http://127.0.0.1:8000`, `app/api/analyse/route.ts:5`). If it's not running you get HTTP 502 "Python backend is not running."
+- To run the full stack you need **two** processes:
+  - Frontend: `npm run dev` (Next.js)
+  - Backend: `npm run dev:backend` (uvicorn `backend.main:app` on port 8000)
+- **Do not fix math/statistics bugs in `lib/stats/*.ts`.** Those TS files are now dead in the runtime — only the vitest tests import them. The production path is the Python `backend/stats/*.py` mirror. Fix the Python code.
+- The AI routes (`/api/profile`, `/api/interpret`) are still pure Next.js — they call the AI provider chain in `lib/ai/`, not the Python backend.
 
-### Satisfaction Rating Prediction Example
+## Python backend
 
-When Efficacy_Rate_Pct is 83.0, Adverse_Events_Pct is 12.9, and Side_Effects_Count is 4.0 (plus 1 additional factor), the model predicts a Satisfaction_Rating of 40.26. This example illustrates how input factors influence the predicted satisfaction rating.
+- Source in `backend/` (`main.py` FastAPI app, `stats/` for computation). No Python tests exist.
+- First-time setup: `pip install -r backend/requirements.txt`. Fresh venv recommended.
+- Endpoints: `POST /analyse` (multipart: `file`, `analyses` JSON, optional `strategies` JSON) and `GET /health`. CORS allows only `http://localhost:3000`.
+- `PYTHON_BACKEND_URL` is not in `.env.local.example`; rely on the default unless the backend runs elsewhere.
 
-## Key Files
-
-- `lib/stats/parser.ts:33` - Sample rows set to all data (no limit) for chart rendering
-- `lib/stats/predictive.ts:585-586` - Train/test split called once (fixed bug: was called twice, producing invalid test metrics)
-- `lib/stats/predictive.ts:228` - Ridge regression fallback for singular matrices (was: fell back to 1-predictor linear)
-- `lib/stats/predictive.ts:306` - Logistic: 5000 steps, L2=0.01, retry with 10000 steps + L2=0.1 (was: 1000 steps, no reg)
-- `lib/stats/preprocessing.ts:121` - Imputation uses all rows before dropping dependent-missing (was: dropped first, imputed on subset)
-- `app/analyse/page.tsx:456` - Scatter chart samples max 2000 points from full dataset (was: used 10 sample rows, no sampling)
-- `app/analyse/page.tsx:1014-1022` - Model failed state shown when predictive model errors out
-- `app/analyse/page.tsx:593-597` - Chart fallback shows "Chart not available" message instead of row-indexed labels
-- `lib/types.ts:1-10` - Column interface with mean/median fields
-
-## Build & Test
+## Commands
 
 ```bash
-npm run build        # next build (includes typecheck + lint)
-npm test             # vitest
+npm run dev          # frontend only
+npm run dev:backend  # Python backend only (uvicorn, port 8000)
+npm test             # vitest (tests the TS lib/stats mirror only)
+npm run build        # next build (runs lint + typecheck)
 npx tsc --noEmit     # typecheck only
+npm run lint         # next lint
 ```
+
+- Tests are vitest with `@/` aliasing to repo root; no test DB or services required (`npm test` then `npm run build` to verify).
+
+## Environment
+
+- At least one AI key (Groq recommended) in `.env.local` for profiler/interpreter. Stats work with no keys.
+- Git history already commits `agents.md` as lowercase alongside `README.md`; keep it.
+
+## Notable past fixes (don't regress)
+
+- Train/test split for held-out metrics must be called once (a double-split bug produced invalid test metrics).
+- Multiple regression falls back to ridge (L2) when XᵀX is singular; logistic retries with more steps / stronger L2 if it fails to converge.
+- Imputation stats use all rows including rows whose dependent value is later dropped.

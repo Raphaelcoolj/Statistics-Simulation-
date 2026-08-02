@@ -10,55 +10,85 @@ export async function captureElement(elementId: string): Promise<HTMLCanvasEleme
     throw new Error(`Element #${elementId} not found`)
   }
 
-  const html2canvasOpts: Record<string, unknown> = {
+  const canvas = await html2canvas(element, {
     scale: 2,
     useCORS: true,
     allowTaint: true,
     backgroundColor: '#ffffff',
     logging: false,
-  }
-  const canvas = await html2canvas(element, html2canvasOpts as Html2Canvas.Html2CanvasOptions)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  } as any)
 
   return canvas
 }
 
-export function addPageToPDF(
+async function addImagePages(
   pdf: jsPDF,
-  canvas: HTMLCanvasElement,
-  title: string,
-  isFirstPage: boolean
-): void {
-  const pageWidth = pdf.internal.pageSize.getWidth()
+  imgData: string,
+  imgWidth: number,
+  imgHeight: number,
+  contentWidth: number,
+  top: number,
+  bottom: number,
+  left: number,
+  isFirstPage: boolean,
+  sectionTitle: string,
+): Promise<void> {
   const pageHeight = pdf.internal.pageSize.getHeight()
+  const availableHeight = pageHeight - top - bottom
 
-  const top = 20
-  const bottom = 20
-  const left = 15
-  const right = 15
-
-  const contentWidth = pageWidth - left - right
-
-  if (!isFirstPage) {
-    pdf.addPage()
-  }
-
-  pdf.setFontSize(14)
-  pdf.setTextColor(30, 58, 95)
-  pdf.text(title, left, 15)
-
-  const imgData = canvas.toDataURL('image/png')
-
-  const imgWidth = contentWidth
-  const imgHeight = (canvas.height * imgWidth) / canvas.width
-
-  if (imgHeight < pageHeight - top - bottom) {
+  if (imgHeight <= availableHeight) {
+    if (!isFirstPage) pdf.addPage()
+    pdf.setFontSize(12)
+    pdf.setTextColor(30, 58, 95)
+    pdf.setFont('helvetica', 'bold')
+    pdf.text(sectionTitle, left, top - 4)
     pdf.addImage(imgData, 'PNG', left, top, imgWidth, imgHeight)
   } else {
-    const scaledHeight = pageHeight - top - bottom
-    const scaledWidth = (canvas.width * scaledHeight) / canvas.height
-    const xOffset = left + (contentWidth - scaledWidth) / 2
-    pdf.addImage(imgData, 'PNG', xOffset, top, scaledWidth, scaledHeight)
-    // TODO: implement true multi-page slicing
+    // Multi-page slicing
+    let remainingHeight = imgHeight
+    let srcY = 0
+    let pageIdx = 0
+
+    while (remainingHeight > 0) {
+      if (!isFirstPage || pageIdx > 0) pdf.addPage()
+
+      pdf.setFontSize(12)
+      pdf.setTextColor(30, 58, 95)
+      pdf.setFont('helvetica', 'bold')
+      const suffix = pageIdx > 0 ? ` (cont.)` : ''
+      pdf.text(sectionTitle + suffix, left, top - 4)
+
+      const sliceHeight = Math.min(remainingHeight, availableHeight)
+      const sliceRatio = sliceHeight / imgHeight
+      const sliceCanvasHeight = Math.round(imgHeight * sliceRatio)
+
+      // Create a temporary canvas for this slice
+      const tmpCanvas = document.createElement('canvas')
+      tmpCanvas.width = imgWidth * 2
+      tmpCanvas.height = sliceCanvasHeight * 2
+      const ctx = tmpCanvas.getContext('2d')
+      if (ctx) {
+        const srcImg = new Image()
+        srcImg.src = imgData
+        await new Promise<void>((resolve) => {
+          srcImg.onload = () => {
+            ctx.drawImage(
+              srcImg,
+              0, srcY * 2, imgWidth * 2, sliceCanvasHeight * 2,
+              0, 0, imgWidth * 2, sliceCanvasHeight * 2,
+            )
+            resolve()
+          }
+        })
+        const sliceData = tmpCanvas.toDataURL('image/png')
+        pdf.addImage(sliceData, 'PNG', left, top, contentWidth, sliceHeight)
+      }
+
+      srcY += sliceCanvasHeight
+      remainingHeight -= sliceHeight
+      pageIdx++
+    }
   }
 }
 
@@ -71,8 +101,10 @@ export async function generatePDF(options: PDFGenerationOptions): Promise<PDFGen
     })
 
     const pageWidth = pdf.internal.pageSize.getWidth()
+    const pageHeight = pdf.internal.pageSize.getHeight()
 
-    pdf.setFillColor(30, 58, 95)
+    // Cover page
+    pdf.setFillColor(5, 150, 105)
     pdf.rect(0, 0, pageWidth, 60, 'F')
 
     pdf.setTextColor(255, 255, 255)
@@ -84,7 +116,7 @@ export async function generatePDF(options: PDFGenerationOptions): Promise<PDFGen
     pdf.setFont('helvetica', 'normal')
     pdf.text('Statistical Analysis Report', pageWidth / 2, 40, { align: 'center' })
 
-    pdf.setTextColor(30, 58, 95)
+    pdf.setTextColor(15, 23, 42)
     pdf.setFontSize(16)
     pdf.setFont('helvetica', 'bold')
     pdf.text(options.title, pageWidth / 2, 85, { align: 'center' })
@@ -103,7 +135,7 @@ export async function generatePDF(options: PDFGenerationOptions): Promise<PDFGen
       pdf.text(`Generated: ${timestamp}`, pageWidth / 2, 100, { align: 'center' })
     }
 
-    pdf.setDrawColor(46, 134, 171)
+    pdf.setDrawColor(5, 150, 105)
     pdf.setLineWidth(0.5)
     pdf.line(15, 270, pageWidth - 15, 270)
     pdf.setFontSize(9)
@@ -115,21 +147,41 @@ export async function generatePDF(options: PDFGenerationOptions): Promise<PDFGen
       { align: 'center' }
     )
 
+    const top = 25
+    const bottom = 15
+    const left = 15
+    const right = 15
+    const contentWidth = pageWidth - left - right
+
+    // Capture each section
     for (let i = 0; i < options.sections.length; i++) {
       const section = options.sections[i]
-      const canvas = await captureElement(section.elementId)
-      addPageToPDF(pdf, canvas, section.title, false)
+      try {
+        const canvas = await captureElement(section.elementId)
+        const imgData = canvas.toDataURL('image/png')
+        const imgWidth = contentWidth
+        const imgHeight = (canvas.height * imgWidth) / canvas.width
+
+        addImagePages(pdf, imgData, imgWidth, imgHeight, contentWidth, top, bottom, left, false, section.title)
+      } catch {
+        // Section not found — add a placeholder page
+        pdf.addPage()
+        pdf.setFontSize(12)
+        pdf.setTextColor(100, 100, 100)
+        pdf.text(`${section.title} — (content not available)`, left, 40)
+      }
     }
 
+    // Add page numbers
     const totalPages = pdf.getNumberOfPages()
-    for (let i = 2; i <= totalPages; i++) {
+    for (let i = 1; i <= totalPages; i++) {
       pdf.setPage(i)
-      pdf.setFontSize(9)
+      pdf.setFontSize(8)
       pdf.setTextColor(150, 150, 150)
       pdf.text(
-        `Page ${i - 1} of ${totalPages - 1}`,
-        pdf.internal.pageSize.getWidth() / 2,
-        pdf.internal.pageSize.getHeight() - 8,
+        `Page ${i} of ${totalPages}`,
+        pageWidth / 2,
+        pageHeight - 8,
         { align: 'center' }
       )
     }

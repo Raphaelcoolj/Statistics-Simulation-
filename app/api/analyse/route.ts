@@ -45,8 +45,13 @@ export async function POST(request: NextRequest) {
       proxyForm.append('strategies', strategiesRaw)
     }
 
+    const codebookRaw = formData.get('codebook')
+    if (codebookRaw && typeof codebookRaw === 'string') {
+      proxyForm.append('codebook', codebookRaw)
+    }
+
     const controller = new AbortController()
-    const timeout = setTimeout(() => controller.abort(), 60000)
+    const timeout = setTimeout(() => controller.abort(), 180000)
 
     const res = await fetch(`${PYTHON_BACKEND}/analyse`, {
       method: 'POST',

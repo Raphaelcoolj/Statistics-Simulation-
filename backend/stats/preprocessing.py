@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+from scipy import stats as scipy_stats
 from sklearn.model_selection import train_test_split as sk_train_test_split
 
 
@@ -16,7 +17,16 @@ def preprocess_for_model(
         if df[col].isna().sum() == 0:
             continue
         if np.issubdtype(df[col].dtype, np.number):
-            df[col] = df[col].fillna(df[col].mean())
+            # Use median for skewed distributions, mean for symmetric
+            vals = df[col].dropna()
+            if len(vals) >= 8:
+                skewness = abs(scipy_stats.skew(vals))
+                if skewness > 1.0:
+                    df[col] = df[col].fillna(df[col].median())
+                else:
+                    df[col] = df[col].fillna(df[col].mean())
+            else:
+                df[col] = df[col].fillna(df[col].mean())
         else:
             mode_val = df[col].mode()
             if not mode_val.empty:

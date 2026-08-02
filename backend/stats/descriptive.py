@@ -39,7 +39,7 @@ def compute_descriptive(df: pd.DataFrame, columns: list[str]) -> list[Descriptiv
             result.variance = pyval(float(np.var(vals, ddof=1))) if len(vals) > 1 else 0.0
             result.min = pyval(float(np.min(vals)))
             result.max = pyval(float(np.max(vals)))
-            result.range = pyval(float(np.ptp(vals)))
+            result.range = pyval(float(np.max(vals) - np.min(vals)))
             q1, q3 = np.percentile(vals, [25, 75])
             result.iqr = pyval(float(q3 - q1))
             if len(vals) >= 3:

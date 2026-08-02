@@ -6,3 +6,12 @@ scikit-learn==1.9.0
 scipy==1.18.0
 python-multipart==0.0.32
 httpx==0.28.1
+openpyxl==3.1.5
+xlrd==2.0.1
+# ML boosters & tuning
+xgboost>=2.1.0
+lightgbm>=4.5.0
+optuna>=4.0.0
+# Model explainability
+shap>=0.47.0
+lime>=0.2.0

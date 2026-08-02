@@ -19,9 +19,17 @@ from sklearn.metrics import (
 from sklearn.model_selection import train_test_split as sk_train_test_split
 from ..models import (
     ModelType, RegressionResult, TestMetrics,
-    PredictiveResult, ColumnType,
+    PredictiveResult, ColumnType, FeatureEngineeringConfig, FeatureEngineeringReport,
 )
 from .preprocessing import preprocess_for_model, one_hot_encode, compute_vif
+from .feature_engineering import (
+    auto_encode, auto_scale,
+    extract_datetime_features, create_ratio_features,
+    create_aggregation_features, create_interaction_features,
+    filter_correlated_features, select_by_correlation_with_target,
+    apply_pca, select_by_lasso, select_by_feature_importance,
+    apply_vif_filter,
+)
 
 
 def select_model(
@@ -218,8 +226,22 @@ def run_logistic_regression(
 
     # Encode y as 0/1 if not already
     unique_y = np.unique(y)
-    if not np.array_equal(unique_y, [0, 1]) and not np.array_equal(unique_y, [0]) and not np.array_equal(unique_y, [1]):
-        y = np.where(y == np.max(unique_y), 1, 0)
+    if np.array_equal(unique_y, [0, 1]) or np.array_equal(unique_y, [0]) or np.array_equal(unique_y, [1]):
+        pass  # Already 0/1 encoded
+    elif len(unique_y) == 2:
+        # Binary: map min→0, max→1 explicitly
+        sorted_vals = sorted(unique_y)
+        y = np.where(y == sorted_vals[1], 1, 0)
+    elif len(unique_y) > 2:
+        # Multi-class: keep only the two most frequent classes
+        from collections import Counter
+        counts = Counter(y)
+        top_two = [val for val, _ in counts.most_common(2)]
+        mask = np.isin(y, top_two)
+        y = np.where(y == top_two[0], 0, 1)
+        # Filter to only the two classes
+        X = X[mask]
+        y = y[mask]
 
     X_train, X_test, y_train, y_test = sk_train_test_split(
         X, y, test_size=0.2, random_state=42
@@ -442,7 +464,10 @@ def run_predictive(
     predictors: list[str],
     column_types: dict[str, ColumnType],
     model_type_override: ModelType | None = None,
-) -> PredictiveResult:
+    fe_config: FeatureEngineeringConfig | None = None,
+) -> tuple[PredictiveResult, FeatureEngineeringReport]:
+    report = FeatureEngineeringReport()
+
     if dependent not in df.columns:
         return PredictiveResult(
             modelType=ModelType.linear,
@@ -450,7 +475,7 @@ def run_predictive(
                 modelType=ModelType.linear, dependent=dependent, predictors=predictors,
                 coefficients=[], intercept=0.0, predictions=[], note="Dependent column not found",
             ),
-        )
+        ), report
 
     valid_preds = [p for p in predictors if p in df.columns]
     if not valid_preds:
@@ -460,7 +485,7 @@ def run_predictive(
                 modelType=ModelType.linear, dependent=dependent, predictors=predictors,
                 coefficients=[], intercept=0.0, predictions=[], note="No valid predictors",
             ),
-        )
+        ), report
 
     dependent_type = column_types.get(dependent, ColumnType.continuous)
     predictor_types = [column_types.get(p, ColumnType.continuous) for p in valid_preds]
@@ -473,32 +498,153 @@ def run_predictive(
             dependent_type, predictor_types, len(df), df, dependent, valid_preds
         )
 
-    # Preprocess: impute missing values (using all rows first)
+    # Preprocess: impute missing values
     proc_df = preprocess_for_model(df, dependent, valid_preds)
 
-    # One-hot encode categorical/binary predictors
+    # --- Feature Engineering Pipeline ---
+    cols_before = len(proc_df.columns)
+
+    # 1. Feature creation (datetime, ratios, interactions, aggregations)
+    if fe_config:
+        if fe_config.datetimeColumns:
+            proc_df, dt_created = extract_datetime_features(
+                proc_df, fe_config.datetimeColumns, fe_config.datetimeFeatures,
+            )
+            report.datetimeFeatures = dt_created
+            # Add extracted datetime cols to predictors
+            for orig, new_cols in dt_created.items():
+                valid_preds.extend(c for c in new_cols if c in proc_df.columns)
+
+        if fe_config.ratioPairs:
+            proc_df, ratio_cols = create_ratio_features(proc_df, fe_config.ratioPairs)
+            report.ratioFeatures = ratio_cols
+            valid_preds.extend(c for c in ratio_cols if c in proc_df.columns)
+
+        if fe_config.interactionPairs:
+            proc_df, inter_cols = create_interaction_features(proc_df, fe_config.interactionPairs)
+            report.interactionFeatures = inter_cols
+            valid_preds.extend(c for c in inter_cols if c in proc_df.columns)
+
+        if fe_config.aggregationColumns:
+            proc_df, agg_cols = create_aggregation_features(
+                proc_df, fe_config.aggregationColumns, fe_config.aggregationGroupBy,
+            )
+            report.aggregationFeatures = agg_cols
+            valid_preds.extend(c for c in agg_cols if c in proc_df.columns)
+
+    # 2. Identify categorical and numeric predictors
     cat_preds = [
         p for p in valid_preds
-        if column_types.get(p, ColumnType.continuous) in (ColumnType.categorical, ColumnType.binary)
+        if p in proc_df.columns and column_types.get(p, ColumnType.continuous) in (ColumnType.categorical, ColumnType.binary)
     ]
-    encoded_mapping = {}
-    if cat_preds:
-        proc_df, encoded_mapping = one_hot_encode(proc_df, cat_preds)
+    num_preds = [p for p in valid_preds if p not in cat_preds and p in proc_df.columns]
 
-    # Build expanded predictor list (categoricals → their encoded columns)
+    # 3. Encoding
+    encoded_mapping = {}
+    if fe_config and fe_config.encodingStrategy:
+        strategy = fe_config.encodingStrategy
+        enc_cols = fe_config.encodingColumns or cat_preds
+        if strategy == "auto":
+            proc_df, enc_report = auto_encode(proc_df, enc_cols, dependent)
+        elif strategy == "target" and dependent in proc_df.columns:
+            from .feature_engineering import target_encode
+            proc_df, enc_report = target_encode(proc_df, enc_cols, dependent)
+        elif strategy == "ordinal":
+            from .feature_engineering import ordinal_encode
+            proc_df, enc_report = ordinal_encode(proc_df, enc_cols, fe_config.ordinalMaps)
+        else:
+            # Default: one-hot
+            proc_df, enc_report = one_hot_encode(proc_df, enc_cols)
+        report.encoding = enc_report
+    elif cat_preds:
+        # Auto-encode categoricals (one-hot for low cardinality, target for high)
+        proc_df, enc_report = auto_encode(proc_df, cat_preds, dependent)
+        report.encoding = enc_report
+
+    # Build expanded predictor list after encoding
     expanded_predictors = []
     for p in valid_preds:
-        if p in encoded_mapping:
-            expanded_predictors.extend(encoded_mapping[p]["encoded"])
-        else:
+        if p in proc_df.columns:
             expanded_predictors.append(p)
+    # Add any new columns from encoding
+    for col in proc_df.columns:
+        if col not in expanded_predictors and col != dependent and col in proc_df.columns:
+            # Check if this is an encoded column derived from a predictor
+            if any(col.startswith(cp + "_") or col.startswith(cp + ".") for cp in cat_preds):
+                expanded_predictors.append(col)
 
-    # For timeseries, use original data (need temporal order, no train/test split)
+    # Remove duplicates while preserving order
+    seen = set()
+    unique_predictors = []
+    for p in expanded_predictors:
+        if p not in seen and p in proc_df.columns:
+            seen.add(p)
+            unique_predictors.append(p)
+    expanded_predictors = unique_predictors
+
+    # 4. Feature selection (before scaling)
+    if fe_config and expanded_predictors:
+        if fe_config.removeCorrelated:
+            keep_cols, corr_report = filter_correlated_features(
+                proc_df, expanded_predictors, fe_config.correlationThreshold or 0.95,
+            )
+            expanded_predictors = [p for p in keep_cols if p in proc_df.columns]
+            report.correlatedFilter = corr_report
+
+        if fe_config.targetCorrelationFilter and dependent in proc_df.columns:
+            selected, tcorr_report = select_by_correlation_with_target(
+                proc_df, expanded_predictors, dependent,
+                fe_config.targetCorrelationThreshold or 0.05,
+            )
+            expanded_predictors = [p for p in selected if p in proc_df.columns]
+            report.targetCorrelationFilter = tcorr_report
+
+        if fe_config.applyVifFilter and len(expanded_predictors) > 2:
+            selected, vif_report = apply_vif_filter(
+                proc_df, expanded_predictors, fe_config.vifThreshold or 10.0,
+            )
+            expanded_predictors = [p for p in selected if p in proc_df.columns]
+            report.vifFilter = vif_report
+
+        if fe_config.applyLassoSelection and dependent in proc_df.columns:
+            selected, lasso_report = select_by_lasso(
+                proc_df, expanded_predictors, dependent, fe_config.lassoAlpha or 0.01,
+            )
+            expanded_predictors = [p for p in selected if p in proc_df.columns]
+            report.lassoSelection = lasso_report
+
+        if fe_config.applyPca:
+            proc_df, pca_report = apply_pca(
+                proc_df, expanded_predictors, variance_threshold=fe_config.pcaVarianceThreshold or 0.95,
+            )
+            expanded_predictors = [c for c in pca_report.get("new_columns", []) if c in proc_df.columns]
+            report.pcaResult = pca_report
+
+        if fe_config.applyFeatureImportance and dependent in proc_df.columns:
+            selected, fi_report = select_by_feature_importance(
+                proc_df, expanded_predictors, dependent,
+                top_k=fe_config.featureImportanceTopK,
+            )
+            expanded_predictors = [p for p in selected if p in proc_df.columns]
+            report.featureImportanceSelection = fi_report
+
+    # 5. Scaling (after selection, before model training)
+    if fe_config and fe_config.scalingMethod:
+        exclude = [dependent] + (fe_config.scalingExclude or [])
+        proc_df, scale_params = auto_scale(
+            proc_df, expanded_predictors, fe_config.scalingMethod, exclude,
+        )
+        report.scaling = scale_params
+
+    report.columnsBefore = cols_before
+    report.columnsAfter = len(proc_df.columns)
+
+    # For timeseries, use original data (need temporal order)
     if model_type == ModelType.timeseries and len(valid_preds) >= 1:
         time_col = valid_preds[0]
         ts_result = run_timeseries(proc_df, dependent, time_col)
-        ts_result.encodedColumns = encoded_mapping if encoded_mapping else None
-        return ts_result
+        ts_result.encodedColumns = report.encoding if report.encoding else None
+        return ts_result, report
 
     # Run the appropriate model
     if model_type == ModelType.linear and len(expanded_predictors) == 1:
@@ -514,10 +660,23 @@ def run_predictive(
 
     # Build preprocessing notes
     notes = []
-    if cat_preds:
-        total_encoded = sum(len(v["encoded"]) for v in encoded_mapping.values())
-        refs = [f'{col} (reference: {info["reference"]})' for col, info in encoded_mapping.items()]
-        notes.append(f"One-hot encoded: {', '.join(refs)}")
+    if report.encoding:
+        encoded_cols = []
+        for col, info in report.encoding.items():
+            if info.get("method") == "one_hot":
+                encoded_cols.append(f'{col} (one-hot, ref: {info.get("reference", "?")})')
+            elif info.get("method") == "target":
+                encoded_cols.append(f'{col} (target encoded)')
+            elif info.get("method") == "ordinal":
+                encoded_cols.append(f'{col} (ordinal)')
+        if encoded_cols:
+            notes.append(f"Encoded: {', '.join(encoded_cols)}")
+
+    if report.scaling:
+        notes.append(f"Scaled: {list(report.scaling.keys())}")
+
+    if report.pcaResult and report.pcaResult.get("components", 0) > 0:
+        notes.append(f"PCA: {report.pcaResult['components']} components ({sum(report.pcaResult.get('variance_explained', [])):.1%} variance)")
 
     if reg_result.note:
         notes.insert(0, reg_result.note)
@@ -528,5 +687,5 @@ def run_predictive(
     return PredictiveResult(
         modelType=model_type,
         regressionResult=reg_result,
-        encodedColumns=encoded_mapping if encoded_mapping else None,
-    )
+        encodedColumns=report.encoding if report.encoding else None,
+    ), report

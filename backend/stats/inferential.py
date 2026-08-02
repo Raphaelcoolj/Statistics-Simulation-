@@ -5,7 +5,11 @@ from ..models import CorrelationResult, HypothesisResult, RegressionResult, Mode
 from .utils import pyval
 
 
-def compute_correlations(df: pd.DataFrame, pairs: list[tuple[str, str]]) -> list[CorrelationResult]:
+def compute_correlations(
+    df: pd.DataFrame,
+    pairs: list[tuple[str, str]],
+    column_types: dict[str, str] | None = None,
+) -> list[CorrelationResult]:
     results: list[CorrelationResult] = []
 
     for col_a, col_b in pairs:
@@ -18,16 +22,27 @@ def compute_correlations(df: pd.DataFrame, pairs: list[tuple[str, str]]) -> list
         vals_a = clean[col_a].astype(float)
         vals_b = clean[col_b].astype(float)
 
-        # Determine method: Pearson if both continuous-ish, else Spearman
-        n_unique_a = vals_a.nunique()
-        n_unique_b = vals_b.nunique()
-        use_spearman = n_unique_a <= 15 or n_unique_b <= 15
+        # Skip constant columns (zero variance)
+        if vals_a.nunique() <= 1 or vals_b.nunique() <= 1:
+            continue
+
+        # Determine method: consult column types first, then fall back to cardinality
+        use_spearman = False
+        if column_types:
+            type_a = column_types.get(col_a, "continuous")
+            type_b = column_types.get(col_b, "continuous")
+            if type_a in ("ordinal", "binary") or type_b in ("ordinal", "binary"):
+                use_spearman = True
+        if not use_spearman:
+            n_unique_a = vals_a.nunique()
+            n_unique_b = vals_b.nunique()
+            use_spearman = n_unique_a <= 15 or n_unique_b <= 15
 
         if use_spearman:
-            r, _ = scipy_stats.spearmanr(vals_a, vals_b)
+            r, p_value = scipy_stats.spearmanr(vals_a, vals_b)
             method = "spearman"
         else:
-            r, _ = scipy_stats.pearsonr(vals_a, vals_b)
+            r, p_value = scipy_stats.pearsonr(vals_a, vals_b)
             method = "pearson"
 
         r = float(r)
@@ -41,12 +56,23 @@ def compute_correlations(df: pd.DataFrame, pairs: list[tuple[str, str]]) -> list
         else:
             interpretation = "weak"
 
+        # Fisher z-transformation for 95% confidence interval
+        ci_lower = ci_upper = None
+        if abs_r < 1.0 and len(clean) > 3:
+            z = 0.5 * np.log((1 + r) / (1 - r))
+            se = 1.0 / np.sqrt(len(clean) - 3)
+            ci_lower = round(float(np.tanh(z - 1.96 * se)), 4)
+            ci_upper = round(float(np.tanh(z + 1.96 * se)), 4)
+
         results.append(CorrelationResult(
             columnA=col_a,
             columnB=col_b,
             r=round(r, 4),
             method=method,
             interpretation=interpretation,
+            pValue=round(float(p_value), 4) if p_value is not None else None,
+            confidenceIntervalLower=ci_lower,
+            confidenceIntervalUpper=ci_upper,
         ))
 
     return results
@@ -73,6 +99,11 @@ def compute_hypothesis_tests(df: pd.DataFrame, tests: list[dict]) -> list[Hypoth
             if len(g1) < 2 or len(g2) < 2:
                 continue
             statistic, p_value = scipy_stats.ttest_ind(g1, g2, equal_var=False)
+            # Welch-Satterthwaite degrees of freedom
+            n1, n2 = len(g1), len(g2)
+            s1, s2 = np.var(g1, ddof=1), np.var(g2, ddof=1)
+            df_welch = ((s1/n1 + s2/n2)**2 /
+                        ((s1/n1)**2/(n1-1) + (s2/n2)**2/(n2-1))) if (s1/n1 + s2/n2) > 0 else 0
             results.append(HypothesisResult(
                 testType="t-test",
                 statistic=round(float(statistic), 4),
@@ -80,6 +111,7 @@ def compute_hypothesis_tests(df: pd.DataFrame, tests: list[dict]) -> list[Hypoth
                 significant=bool(p_value < 0.05),
                 confidenceLevel=0.95,
                 columns=columns,
+                degreesOfFreedom=round(df_welch, 2),
             ))
 
         elif test_type == "chi-square":
@@ -101,6 +133,7 @@ def compute_hypothesis_tests(df: pd.DataFrame, tests: list[dict]) -> list[Hypoth
                 significant=bool(p_value < 0.05),
                 confidenceLevel=0.95,
                 columns=columns,
+                degreesOfFreedom=dof,
             ))
 
         elif test_type == "anova":
@@ -118,6 +151,11 @@ def compute_hypothesis_tests(df: pd.DataFrame, tests: list[dict]) -> list[Hypoth
             if len(groups) < 2:
                 continue
             statistic, p_value = scipy_stats.f_oneway(*groups)
+            # ANOVA degrees of freedom: (k-1, N-k)
+            k = len(groups)
+            n_total = sum(len(g) for g in groups)
+            df_between = k - 1
+            df_within = n_total - k
             results.append(HypothesisResult(
                 testType="anova",
                 statistic=round(float(statistic), 4),
@@ -125,6 +163,7 @@ def compute_hypothesis_tests(df: pd.DataFrame, tests: list[dict]) -> list[Hypoth
                 significant=bool(p_value < 0.05),
                 confidenceLevel=0.95,
                 columns=columns,
+                degreesOfFreedom=(df_between, df_within),
             ))
 
     return results
@@ -139,6 +178,17 @@ def compute_regression(df: pd.DataFrame, dependent: str, predictors: list[str]) 
     clean = df[cols].dropna()
     if len(clean) < 3:
         return None
+
+    # Filter out constant predictors (zero variance)
+    valid_predictors = []
+    for p in predictors:
+        if p not in clean.columns:
+            continue
+        if clean[p].astype(float).nunique() > 1:
+            valid_predictors.append(p)
+    if not valid_predictors:
+        return None
+    predictors = valid_predictors
 
     X = clean[predictors].astype(float).values
     y = clean[dependent].astype(float).values

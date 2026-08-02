@@ -467,7 +467,7 @@ def run_model_experiment(
                 feature_names = [f"feature_{i}" for i in range(X_train.shape[1])]
 
             try:
-                from .explainability import build_explainability_report
+                from stats.explainability import build_explainability_report
                 report["explainability"] = build_explainability_report(
                     best_model_obj, X_train, y_train, X_test, y_test,
                     feature_names, is_classification, best_name,
@@ -476,7 +476,7 @@ def run_model_experiment(
                 report["explainability"] = {"error": str(e)}
 
             try:
-                from .business_translation import (
+                from stats.business_translation import (
                     translate_regression_metrics, translate_classification_metrics,
                     translate_feature_importance, generate_recommendations,
                 )
@@ -510,7 +510,7 @@ def run_model_experiment(
                 report["businessTranslation"] = {"error": str(e)}
 
             try:
-                from .visualization import build_all_model_charts
+                from stats.visualization import build_all_model_charts
                 preds = best_model_obj.predict(X_test).tolist() if hasattr(best_model_obj, "predict") else []
                 actuals = y_test.tolist() if hasattr(y_test, "tolist") else list(y_test)
                 report["charts"] = build_all_model_charts(

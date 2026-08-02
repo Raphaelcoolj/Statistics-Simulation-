@@ -1,8 +1,8 @@
 import pandas as pd
 import numpy as np
 from scipy import stats as scipy_stats
-from ..models import DescriptiveResult, ColumnType
-from .utils import pyval
+from models import DescriptiveResult, ColumnType
+from stats.utils import pyval
 
 
 def _is_numeric(series: pd.Series) -> bool:

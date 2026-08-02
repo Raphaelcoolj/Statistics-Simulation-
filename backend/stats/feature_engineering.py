@@ -669,7 +669,7 @@ def apply_vif_filter(
     vif_threshold: float = 10.0,
 ) -> tuple[list[str], dict[str, Any]]:
     """Iteratively remove features with VIF > threshold (multicollinearity)."""
-    from .preprocessing import compute_vif
+    from stats.preprocessing import compute_vif
 
     cols = list(predictor_cols)
     removed: list[str] = []

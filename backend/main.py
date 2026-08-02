@@ -14,7 +14,7 @@ import json
 import io
 import os
 
-from .models import (
+from models import (
     AnalysisRequest, AnalyseResponse, AnalysisResult,
     ChartSuggestion, MissingValueReport, DatasetSchema,
     ColumnType, ModelType,
@@ -22,15 +22,14 @@ from .models import (
     FeatureEngineeringConfig, FeatureEngineeringReport,
     ModelTrainingConfig, ModelTrainingReport,
 )
-from .stats.parser import parse_file, apply_missing_strategy, apply_codebook
-from .stats.parser import parse_file, apply_missing_strategy, apply_codebook
-from .stats.descriptive import compute_descriptive
-from .stats.inferential import (
+from stats.parser import parse_file, apply_missing_strategy, apply_codebook
+from stats.descriptive import compute_descriptive
+from stats.inferential import (
     compute_correlations, compute_hypothesis_tests, compute_regression,
 )
-from .stats.predictive import run_predictive
-from .stats.model_training import run_model_training
-from .stats.cleaning import (
+from stats.predictive import run_predictive
+from stats.model_training import run_model_training
+from stats.cleaning import (
     handle_outliers, standardize_categoricals, standardize_states,
     parse_dates, fix_typos, remove_exact_duplicates, remove_fuzzy_duplicates,
 )
@@ -231,7 +230,7 @@ async def analyse(
 
     # Advanced imputation (KNN/Iterative) — applied to all numeric columns with missing values
     if preproc_config and preproc_config.advancedImputation:
-        from .stats.parser import apply_knn_imputation, apply_iterative_imputation
+        from stats.parser import apply_knn_imputation, apply_iterative_imputation
         if preproc_config.advancedImputation == "knn":
             df = apply_knn_imputation(df)
         elif preproc_config.advancedImputation == "iterative":
@@ -240,7 +239,7 @@ async def analyse(
     cleaning_report.rowsAfter = len(df)
 
     # Rebuild schema after cleaning (column types may have changed)
-    from .stats.parser import _build_schema
+    from stats.parser import _build_schema
     schema, missing_report = _build_schema(df, schema.fileName)
 
     result = AnalysisResult(chartSuggestions=[])
@@ -255,7 +254,7 @@ async def analyse(
     # Inferential
     inf_config = analyses_data.get("inferential")
     if inf_config:
-        from .models import InferentialResult
+        from models import InferentialResult
         inf_result = InferentialResult()
 
         corr_pairs = inf_config.get("correlationPairs")

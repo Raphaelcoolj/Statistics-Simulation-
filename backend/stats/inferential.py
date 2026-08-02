@@ -1,8 +1,8 @@
 import pandas as pd
 import numpy as np
 from scipy import stats as scipy_stats
-from ..models import CorrelationResult, HypothesisResult, RegressionResult, ModelType
-from .utils import pyval
+from models import CorrelationResult, HypothesisResult, RegressionResult, ModelType
+from stats.utils import pyval
 
 
 def compute_correlations(

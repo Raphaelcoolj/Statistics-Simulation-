@@ -17,12 +17,12 @@ from sklearn.metrics import (
     roc_auc_score,
 )
 from sklearn.model_selection import train_test_split as sk_train_test_split
-from ..models import (
+from models import (
     ModelType, RegressionResult, TestMetrics,
     PredictiveResult, ColumnType, FeatureEngineeringConfig, FeatureEngineeringReport,
 )
-from .preprocessing import preprocess_for_model, one_hot_encode, compute_vif
-from .feature_engineering import (
+from stats.preprocessing import preprocess_for_model, one_hot_encode, compute_vif
+from stats.feature_engineering import (
     auto_encode, auto_scale,
     extract_datetime_features, create_ratio_features,
     create_aggregation_features, create_interaction_features,
@@ -547,10 +547,10 @@ def run_predictive(
         if strategy == "auto":
             proc_df, enc_report = auto_encode(proc_df, enc_cols, dependent)
         elif strategy == "target" and dependent in proc_df.columns:
-            from .feature_engineering import target_encode
+            from stats.feature_engineering import target_encode
             proc_df, enc_report = target_encode(proc_df, enc_cols, dependent)
         elif strategy == "ordinal":
-            from .feature_engineering import ordinal_encode
+            from stats.feature_engineering import ordinal_encode
             proc_df, enc_report = ordinal_encode(proc_df, enc_cols, fe_config.ordinalMaps)
         else:
             # Default: one-hot
